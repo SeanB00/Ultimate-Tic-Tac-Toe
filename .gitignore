@@ -1,0 +1,11 @@
+# Large data files
+q.json
+database_X.npy
+database_y.npy
+
+# Virtual environment
+.venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
