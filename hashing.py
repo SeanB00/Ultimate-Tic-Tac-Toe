@@ -1,65 +1,61 @@
-import base64
-import json
-from math import ceil, log2
+# hashing.py
+import os
+import pickle
 
-# -------------------------------------
-# 1. PACK board -> 17-byte compact form
-# -------------------------------------
-
+STATE_BYTES = 17  # 129 bits = 17 bytes, needed for 3^81 game states
 
 def encode_board_to_int(board):
+
     value = 0
-    for i in range(len(board)):
-        board[i] += 1
-    for x in board:
-        value = value * 3 + int(x)
+    for v in board:
+        value = value * 3 + (int(v) + 1)  # force Python int, never NumPy scalar
     return value
 
+
+# -----------------------------------------
+# DECODING: python int → board list of 81 ints
+# -----------------------------------------
+
 def decode_board_from_int(value):
+    """
+    Decode the integer back to a list of 81 cells in {-1, 0, 1}.
+    """
     board = [0] * 81
     for i in range(80, -1, -1):
-        board[i] = value % 3
+        board[i] = (value % 3) - 1  # undo shift: 0→-1, 1→0, 2→1
         value //= 3
-    for i in range(len(board)):
-        board[i] -= 1
     return board
 
 
+# -----------------------------------------
+# Q-TABLE SAVE (FAST BINARY, MIN STORAGE)
+# -----------------------------------------
+
 def save_qtable(path, qtable):
     """
-    Saves a Q-table where keys are ints.
-    Converts keys to Base64 strings for JSON.
+    Save a Q-table: dict[int → (avg, count)]
+    Stored in a compact binary format using pickle.
+    MUCH smaller and faster than JSON+Base64.
     """
-    data = {}
-    for board_int, q in qtable.items():
-        b = board_int.to_bytes(17, byteorder='big')  # 17 bytes for 3^81
-        b64 = base64.b64encode(b).decode('ascii')
-        data[b64] = [q[0],q[1]]
-
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    with open(path, "wb") as f:
+        pickle.dump(qtable, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-
-# -------------------------------------
-# 4. LOAD Q-TABLE FROM JSON
-# Returns: dict mapping b64state -> float
-# -------------------------------------
+# -----------------------------------------
+# Q-TABLE LOAD
+# -----------------------------------------
 
 def load_qtable(path):
     """
-    Loads a Q-table from JSON, converts keys from Base64 -> int
-    Returns: dict mapping int_board -> float Q-value
+    Load Q-table from binary file.
+    If missing, return empty dict.
     """
-    with open(path, "r") as f:
-        data = json.load(f)
+    if not os.path.exists(path):
+        print(f"No Q-table at {path}, starting fresh.")
+        return {}
 
-    qtable = {}
-    for b64, q in data.items():
-        # Decode Base64 -> bytes -> int
-        b = base64.b64decode(b64)
-        board_int = int.from_bytes(b, byteorder='big')
-        qtable[board_int] = tuple(q)
+    with open(path, "rb") as f:
+        qtable = pickle.load(f)
 
+    print(f"Loaded Q-table with {len(qtable)} entries.")
     return qtable
-
