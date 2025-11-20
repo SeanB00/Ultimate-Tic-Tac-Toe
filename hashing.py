@@ -1,6 +1,7 @@
 # hashing.py
 import os
 import pickle
+import time
 
 STATE_BYTES = 17  # 129 bits = 17 bytes, needed for 3^81 game states
 
@@ -50,6 +51,8 @@ def load_qtable(path):
     Load Q-table from binary file.
     If missing, return empty dict.
     """
+
+    curr_time = time.time()
     if not os.path.exists(path):
         print(f"No Q-table at {path}, starting fresh.")
         return {}
@@ -57,5 +60,5 @@ def load_qtable(path):
     with open(path, "rb") as f:
         qtable = pickle.load(f)
 
-    print(f"Loaded Q-table with {len(qtable)} entries.")
+    print(f"Loaded Q-table with {len(qtable)} entries.\nThe process took {time.time() - curr_time:.1f} seconds.")
     return qtable

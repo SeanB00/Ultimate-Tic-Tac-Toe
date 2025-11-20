@@ -1,7 +1,12 @@
+
 import time
+from copy import deepcopy
+
 import numpy as np
 import random
 import hashing
+from multiprocessing import Pool
+
 
 class UltimateTicTacToeGame:
     def __init__(self):
@@ -18,11 +23,12 @@ class UltimateTicTacToeGame:
         self.curr_board = None
 
         # Q-table stored in fast binary format
-        self.q_table = hashing.load_qtable("q.pkl")
+        self.q_table = {}
 
         self.gamma = 0.9
         self.board_score_list = []
         self.players = {0: "-", 1: "X", -1: "O"}
+
 
     # ---------------------------------------------------------
     # Utility: Generates the set of empty cells for each sub-board
@@ -114,6 +120,52 @@ class UltimateTicTacToeGame:
         # Determine next forced board
         self.curr_board = None if self.sub_board_is_done(*next_board) else next_board
 
+        def find_meta_block(self):
+            """
+            Return (bi, bj) of the sub-board we MUST contest
+            because the opponent has 2-in-a-row in the meta-board.
+            Returns None if no global threat exists.
+            """
+            opp = self.player_symbol
+            sb = self.sub_boards  # 3x3 matrix of {-1,0,1}
+
+            # Rows
+            for i in range(3):
+                row = sb[i]
+                if np.sum(row) == 2 * opp:
+                    for j in range(3):
+                        if row[j] == 0:
+                            return (i, j)
+
+            # Columns
+            for j in range(3):
+                col = sb[:, j]
+                if np.sum(col) == 2 * opp:
+                    for i in range(3):
+                        if col[i] == 0:
+                            return (i, j)
+
+            # Main diagonal
+            diag = np.array([sb[i][i] for i in range(3)])
+            if np.sum(diag) == 2 * opp:
+                for i in range(3):
+                    if sb[i][i] == 0:
+                        return (i, i)
+
+            # Anti-diagonal
+            diag2 = np.array([sb[i][2 - i] for i in range(3)])
+            if np.sum(diag2) == 2 * opp:
+                for i in range(3):
+                    if sb[i][2 - i] == 0:
+                        return (i, 2 - i)
+
+            return None
+
+
+
+
+
+
     def agent_smart_move(self):
         # Decide which sub-boards are playable
         if self.curr_board is None:
@@ -170,15 +222,117 @@ class UltimateTicTacToeGame:
 
         self.curr_board = None if self.sub_board_is_done(*next_board) else next_board
 
+    def find_meta_block(self):
+        """
+        Return (bi, bj) of the sub-board we MUST contest
+        because the opponent has 2-in-a-row in the meta-board.
+        Returns None if no global threat exists.
+        """
+        opp = self.player_symbol
+        sb = self.sub_boards  # 3x3 matrix of {-1,0,1}
+
+        # Rows
+        for i in range(3):
+            row = sb[i]
+            if np.sum(row) == 2 * opp:
+                for j in range(3):
+                    if row[j] == 0:
+                        return (i, j)
+
+        # Columns
+        for j in range(3):
+            col = sb[:, j]
+            if np.sum(col) == 2 * opp:
+                for i in range(3):
+                    if col[i] == 0:
+                        if (i, j) in self.empty_sub_places:
+                            return (i, j)
+
+        # Main diagonal
+        diag = np.array([sb[i][i] for i in range(3)])
+        if np.sum(diag) == 2 * opp:
+            for i in range(3):
+                if sb[i][i] == 0:
+                    if (i, i) in self.empty_sub_places:
+                        return (i, i)
+
+        # Anti-diagonal
+        diag2 = np.array([sb[i][2 - i] for i in range(3)])
+        if np.sum(diag2) == 2 * opp:
+            for i in range(3):
+                if sb[i][2 - i] == 0:
+                    if (i, 2-i) in self.empty_sub_places:
+                        return (i, 2 - i)
+
+        return None
+
+
+
+
+    def find_immidiate_danger(self, row, col):
+        opp = self.player_symbol
+        sb = self.full_board[row][col]  # 3x3 matrix of {-1,0,1}
+
+        # Rows
+        for i in range(3):
+            row = sb[i]
+            if np.sum(row) == 2 * opp:
+                for j in range(3):
+                    if row[j] == 0:
+                        return (i, j)
+
+        # Columns
+        for j in range(3):
+            col = sb[:, j]
+            if np.sum(col) == 2 * opp:
+                for i in range(3):
+                    if col[i] == 0:
+                        return (i, j)
+
+        # Main diagonal
+        diag = np.array([sb[i][i] for i in range(3)])
+        if np.sum(diag) == 2 * opp:
+            for i in range(3):
+                if sb[i][i] == 0:
+                    return (i, i)
+
+        # Anti-diagonal
+        diag2 = np.array([sb[i][2 - i] for i in range(3)])
+        if np.sum(diag2) == 2 * opp:
+            for i in range(3):
+                if sb[i][2 - i] == 0:
+                    return (i, 2 - i)
+
+
+
     def agent_random_move(self):
+
+        # GLOBAL BLOCK: opponent is about to win meta-board
+
         # Decide playable boards
+
         if self.curr_board is None:
             bi, bj = random.choice(tuple(self.empty_sub_places))
         else:
             bi, bj = self.curr_board
-
-        # Random empty cell (O(1))
         r, c = random.choice(tuple(self.empty_places[bi][bj]))
+
+        threat = self.find_meta_block()
+
+        if len(self.empty_sub_places) <= 4:  # ONLY NEAR END-GAME
+            if threat is not None:
+                real_threat = self.find_immidiate_danger(*threat)
+                if real_threat is not None:
+                    if self.curr_board is None:
+                        bi, bj = threat
+                        r, c = real_threat
+                    elif self.curr_board == threat:
+                        r, c = real_threat
+                    else:
+                        copy = deepcopy(self.empty_places[self.curr_board])
+                        copy.remove(threat)
+                        if len(copy) > 0:
+                            r, c = random.choice(tuple(copy))
 
         # Apply move
         self.full_board[bi][bj][r][c] = self.agent_symbol
@@ -287,44 +441,148 @@ class UltimateTicTacToeGame:
         return np.array(boards)
 
 
+def run_games_chunk(args):
+    """
+    Run a chunk of games in a separate process.
+
+    args: (num_games_in_chunk, seed)
+    returns:
+        - local_q: dict[int -> (avg, count)]  (local Q-table updates)
+        - agent_wins, player_wins, ties
+        - end_states: list of final board ints (for dataset)
+        - winners: list of winners (1, -1, or 0)
+    """
+    num_games, seed = args
+
+    # Make randomness independent across workers
+    random.seed(seed)
+    np.random.seed(seed)
+
+    game = UltimateTicTacToeGame()
+    local_q = {}
+
+    agent_wins = player_wins = ties = 0
+    end_states = []
+    winners = []
+
+    for _ in range(num_games):
+        game.init_game()
+        boards = game.play_one_game()
+        winner = game.check_true_win()
+
+        # stats
+        if winner == 1:
+            agent_wins += 1
+        elif winner == -1:
+            player_wins += 1
+        else:
+            ties += 1
+
+        winners.append(winner)
+        end_states.append(boards[0])  # keep as int here
+
+        # merge this game's board_score_list into local_q
+        for board_int, reward in game.board_score_list:
+            if board_int in local_q:
+                avg, count = local_q[board_int]
+                new_avg = (avg * count + reward) / (count + 1)
+                local_q[board_int] = (new_avg, count + 1)
+            else:
+                local_q[board_int] = (reward, 1)
+
+    return local_q, agent_wins, player_wins, ties, end_states, winners
+
+
+
 class Games:
 
-    def __init__(self, num_games):
+    def __init__(self, num_games, processes=None, log_every=1000, chunk_size=50):
         self.num_games = num_games
+
+        # Stats
         self.agent_wins = 0
         self.player_wins = 0
         self.ties = 0
+
+        # Master game just for global Q-table and helpers
         self.game = UltimateTicTacToeGame()
 
-        end_states = []
-        winners = []
 
-        start = time.time()
+        print(f"Running {num_games} games with multiprocessing...")
+        start_time = time.time()
 
-        for i in range(num_games):
-            if i > 0 and i % 1000 == 0:
-                speed = i / (time.time() - start)
-                print(f"{i} games, speed = {speed:.1f} games/sec")
+        # How many chunks do we need?
+        num_chunks = (num_games + chunk_size - 1) // chunk_size
 
-            boards = self.game.play_one_game()
-            winner = self.game.check_true_win()
+        # Prepare (chunk_size, seed) for each chunk
+        # Different seed per chunk to decorrelate
+        args_list = []
+        base_seed = int(time.time())
+        for i in range(num_chunks):
+            args_list.append((chunk_size, base_seed + i))
 
-            if winner == 1:
-                self.agent_wins += 1
-            elif winner == -1:
-                self.player_wins += 1
-            else:
-                self.ties += 1
+        completed_games = 0
 
-            winners.append(winner)
-            end_states.append(self.game.get_board_from_int(boards[0]))
+        with Pool(processes=processes) as p:
+            for local_q, a_w, p_w, t_w, end_states, winners in p.imap_unordered(
+                run_games_chunk,
+                args_list
+            ):
+                # How many games were in this chunk (last chunk may be partial)
+                chunk_games = len(winners)
+                completed_games += chunk_games
 
-        self.X = np.array(end_states)
-        self.y = np.array(winners)
+                # ----------------- merge stats -----------------
+                self.agent_wins += a_w
+                self.player_wins += p_w
+                self.ties += t_w
+
+                # ----------------- merge dataset -----------------
+                # end_states are board_ints; turn into 9x9 boards
+
+
+                # ----------------- merge local Q-table -----------------
+                global_q = self.game.q_table
+                for board_int, (avg_local, count_local) in local_q.items():
+                    if board_int in global_q:
+                        avg_g, count_g = global_q[board_int]
+                        # merge two (avg,count) accumulators
+                        total_count = count_g + count_local
+                        merged_avg = (avg_g * count_g + avg_local * count_local) / total_count
+                        global_q[board_int] = (merged_avg, total_count)
+                    else:
+                        global_q[board_int] = (avg_local, count_local)
+
+                # ----------------- logging -----------------
+                if completed_games >= log_every and completed_games % log_every < chunk_size:
+                    elapsed = time.time() - start_time
+                    speed = completed_games / elapsed if elapsed > 0 else 0.0
+                    print(f"{completed_games}/{self.num_games} games, "
+                          f"speed = {speed:.2f} games/sec")
+
+        total_time = time.time() - start_time
+        final_speed = self.num_games / total_time if total_time > 0 else 0.0
+
+        print(f"\nFinished {self.num_games} games in {total_time:.2f}s "
+              f"({final_speed:.2f} games/sec)\n")
+
+
 
 
 if __name__ == "__main__":
-    games = Games(10_000)
-    print("X (agent) won:", (games.agent_wins / games.num_games) * 100)
-    print("O (player) won:", (games.player_wins / games.num_games) * 100)
+    import multiprocessing
+    cores = multiprocessing.cpu_count()
+    games = Games(
+        num_games=1000000,
+        processes=cores,
+        log_every=1000,
+        chunk_size=50
+    )
+
+    print("Agent win rate:", (games.agent_wins / games.num_games) * 100)
+    print("Player win rate:", (games.player_wins / games.num_games) * 100)
+    print("Tie rate:", (games.ties / games.num_games) * 100)
+
     hashing.save_qtable("q.pkl", games.game.q_table)
+
+
