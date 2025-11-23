@@ -38,6 +38,7 @@ def save_qtable(path, qtable):
     Stored in a compact binary format using pickle.
     MUCH smaller and faster than JSON+Base64.
     """
+
     with open(path, "wb") as f:
         pickle.dump(qtable, f, protocol=pickle.HIGHEST_PROTOCOL)
 
