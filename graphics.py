@@ -6,6 +6,8 @@ from kivy.uix.label import Label
 from kivy.core.window import Window
 from kivy.properties import ObjectProperty
 
+from kivy.graphics import Color, Line
+
 from logic import UltimateTicTacToeGame
 
 
@@ -15,6 +17,7 @@ class CellButton(Button):
         self.global_r = global_r
         self.global_c = global_c
         self.font_size = 32
+        self.color = (0.93, 0.96, 1, 1)
         self.background_normal = ''
 
 
@@ -30,12 +33,13 @@ class BoardGrid(GridLayout):
         self.status_label = status_label
         self.buttons = []
 
-        # Color palette
-        self.base_light = (0.20, 0.22, 0.28, 1)
-        self.base_dark = (0.24, 0.25, 0.32, 1)
-        self.playable_color = (0.33, 0.37, 0.48, 1)
-        self.unavailable_color = (0.14, 0.15, 0.18, 1)
-        self.completed_color = (0.10, 0.11, 0.13, 1)
+        # Color palette tuned for clarity
+        self.base_light = (0.24, 0.28, 0.36, 1)
+        self.base_dark = (0.16, 0.18, 0.25, 1)
+        self.playable_tint = (0.29, 0.63, 0.85, 1)
+        self.unavailable_tint = (0.04, 0.05, 0.07, 1)
+        self.completed_color = (0.09, 0.10, 0.12, 1)
+        self.grid_line_color = (0.85, 0.88, 0.94, 1)
 
         for r in range(9):
             row_buttons = []
@@ -55,6 +59,8 @@ class BoardGrid(GridLayout):
             self.buttons.append(row_buttons)
 
         self.refresh()
+        self.bind(size=self.update_grid_lines, pos=self.update_grid_lines)
+        self.update_grid_lines()
 
     def on_cell_pressed(self, btn):
 
@@ -123,12 +129,14 @@ class BoardGrid(GridLayout):
                 bi = r // 3
                 bj = c // 3
 
+                base = self.buttons[r][c].base_color
+
                 if self.game.sub_board_is_done(bi, bj):
                     color = self.completed_color
                 elif (bi, bj) in playable_boards:
-                    color = self.playable_color
+                    color = self._blend(base, self.playable_tint, 0.55)
                 else:
-                    color = self.unavailable_color
+                    color = self._blend(base, self.unavailable_tint, 0.35)
 
                 self.buttons[r][c].background_color = color
 
@@ -141,6 +149,9 @@ class BoardGrid(GridLayout):
             bi, bj = self.game.curr_board
             self.status_label.text = f"Your turn (O): Must play in highlighted sub-board ({bi+1}, {bj+1})."
 
+    def _blend(self, base, tint, factor):
+        return tuple((1 - factor) * b + factor * t for b, t in zip(base, tint))
+
     def show_result(self):
         w = self.game.check_true_win()
         if w == 1:
@@ -149,6 +160,20 @@ class BoardGrid(GridLayout):
             self.status_label.text = "O (YOU) WIN!"
         else:
             self.status_label.text = "It's a TIE!"
+
+    def update_grid_lines(self, *args):
+        self.canvas.after.clear()
+        with self.canvas.after:
+            Color(rgba=self.grid_line_color)
+
+            cw = self.width / 9.0
+            ch = self.height / 9.0
+            x0, y0 = self.x, self.y
+
+            for i in range(10):
+                width = 3 if i % 3 == 0 else 1
+                Line(points=[x0 + i * cw, y0, x0 + i * cw, y0 + self.height], width=width)
+                Line(points=[x0, y0 + i * ch, x0 + self.width, y0 + i * ch], width=width)
 
 
 class UTTTApp(App):
