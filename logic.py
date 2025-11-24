@@ -471,6 +471,16 @@ class UltimateTicTacToeGame:
     def check_true_tie(self):
         return len(self.empty_sub_places) == 0 and self.check_true_win() == 0
 
+    def get_playable_boards(self):
+        """Return a set of sub-board coordinates that can be played now."""
+        if self.curr_board is None:
+            return set(self.empty_sub_places)
+
+        if self.curr_board in self.empty_sub_places:
+            return {self.curr_board}
+
+        return set(self.empty_sub_places)
+
     def init_game(self):
         self.full_board = np.zeros((3, 3, 3, 3), dtype=int)
         self.sub_boards = np.zeros((3, 3), dtype=int)
