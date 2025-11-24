@@ -30,6 +30,13 @@ class BoardGrid(GridLayout):
         self.status_label = status_label
         self.buttons = []
 
+        # Color palette
+        self.base_light = (0.20, 0.22, 0.28, 1)
+        self.base_dark = (0.24, 0.25, 0.32, 1)
+        self.playable_color = (0.33, 0.37, 0.48, 1)
+        self.unavailable_color = (0.14, 0.15, 0.18, 1)
+        self.completed_color = (0.10, 0.11, 0.13, 1)
+
         for r in range(9):
             row_buttons = []
             for c in range(9):
@@ -37,12 +44,10 @@ class BoardGrid(GridLayout):
                 # sub-board shading
                 bi = r // 3
                 bj = c // 3
-                if (bi + bj) % 2 == 0:
-                    bg = (0.21, 0.21, 0.27, 1)
-                else:
-                    bg = (0.26, 0.26, 0.32, 1)
+                base = self.base_light if (bi + bj) % 2 == 0 else self.base_dark
 
-                btn = CellButton(r, c, text="", background_color=bg)
+                btn = CellButton(r, c, text="", background_color=base)
+                btn.base_color = base
                 btn.bind(on_release=self.on_cell_pressed)
                 row_buttons.append(btn)
                 self.add_widget(btn)
@@ -108,19 +113,33 @@ class BoardGrid(GridLayout):
 
     def refresh(self):
         board = self.game.global_board()
+        playable_boards = self.game.get_playable_boards() if self.game.is_game_running() else set()
         for r in range(9):
             for c in range(9):
                 v = board[r][c]
                 self.buttons[r][c].text = "X" if v == 1 else ("O" if v == -1 else "")
 
+                # Update coloring to highlight legal boards
+                bi = r // 3
+                bj = c // 3
+
+                if self.game.sub_board_is_done(bi, bj):
+                    color = self.completed_color
+                elif (bi, bj) in playable_boards:
+                    color = self.playable_color
+                else:
+                    color = self.unavailable_color
+
+                self.buttons[r][c].background_color = color
+
         if not self.game.is_game_running():
             return
 
         if self.game.curr_board is None:
-            self.status_label.text = "Your turn (O): Play in any unfinished sub-board."
+            self.status_label.text = "Your turn (O): Play in any unfinished (highlighted) sub-board."
         else:
             bi, bj = self.game.curr_board
-            self.status_label.text = f"Your turn (O): Must play in sub-board ({bi+1}, {bj+1})."
+            self.status_label.text = f"Your turn (O): Must play in highlighted sub-board ({bi+1}, {bj+1})."
 
     def show_result(self):
         w = self.game.check_true_win()
