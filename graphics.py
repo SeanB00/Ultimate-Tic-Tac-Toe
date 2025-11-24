@@ -6,6 +6,8 @@ from kivy.uix.label import Label
 from kivy.core.window import Window
 from kivy.properties import ObjectProperty
 
+from kivy.graphics import Color, Line
+
 from logic import UltimateTicTacToeGame
 
 
@@ -15,6 +17,7 @@ class CellButton(Button):
         self.global_r = global_r
         self.global_c = global_c
         self.font_size = 32
+        self.color = (0.93, 0.96, 1, 1)
         self.background_normal = ''
 
 
@@ -30,6 +33,14 @@ class BoardGrid(GridLayout):
         self.status_label = status_label
         self.buttons = []
 
+        # Color palette tuned for clarity
+        self.base_light = (0.24, 0.28, 0.36, 1)
+        self.base_dark = (0.16, 0.18, 0.25, 1)
+        self.playable_tint = (0.29, 0.63, 0.85, 1)
+        self.unavailable_tint = (0.04, 0.05, 0.07, 1)
+        self.completed_color = (0.09, 0.10, 0.12, 1)
+        self.grid_line_color = (0.85, 0.88, 0.94, 1)
+
         for r in range(9):
             row_buttons = []
             for c in range(9):
@@ -37,12 +48,10 @@ class BoardGrid(GridLayout):
                 # sub-board shading
                 bi = r // 3
                 bj = c // 3
-                if (bi + bj) % 2 == 0:
-                    bg = (0.21, 0.21, 0.27, 1)
-                else:
-                    bg = (0.26, 0.26, 0.32, 1)
+                base = self.base_light if (bi + bj) % 2 == 0 else self.base_dark
 
-                btn = CellButton(r, c, text="", background_color=bg)
+                btn = CellButton(r, c, text="", background_color=base)
+                btn.base_color = base
                 btn.bind(on_release=self.on_cell_pressed)
                 row_buttons.append(btn)
                 self.add_widget(btn)
@@ -50,6 +59,8 @@ class BoardGrid(GridLayout):
             self.buttons.append(row_buttons)
 
         self.refresh()
+        self.bind(size=self.update_grid_lines, pos=self.update_grid_lines)
+        self.update_grid_lines()
 
     def on_cell_pressed(self, btn):
 
@@ -108,19 +119,38 @@ class BoardGrid(GridLayout):
 
     def refresh(self):
         board = self.game.global_board()
+        playable_boards = self.game.get_playable_boards() if self.game.is_game_running() else set()
         for r in range(9):
             for c in range(9):
                 v = board[r][c]
                 self.buttons[r][c].text = "X" if v == 1 else ("O" if v == -1 else "")
 
+                # Update coloring to highlight legal boards
+                bi = r // 3
+                bj = c // 3
+
+                base = self.buttons[r][c].base_color
+
+                if self.game.sub_board_is_done(bi, bj):
+                    color = self.completed_color
+                elif (bi, bj) in playable_boards:
+                    color = self._blend(base, self.playable_tint, 0.55)
+                else:
+                    color = self._blend(base, self.unavailable_tint, 0.35)
+
+                self.buttons[r][c].background_color = color
+
         if not self.game.is_game_running():
             return
 
         if self.game.curr_board is None:
-            self.status_label.text = "Your turn (O): Play in any unfinished sub-board."
+            self.status_label.text = "Your turn (O): Play in any unfinished (highlighted) sub-board."
         else:
             bi, bj = self.game.curr_board
-            self.status_label.text = f"Your turn (O): Must play in sub-board ({bi+1}, {bj+1})."
+            self.status_label.text = f"Your turn (O): Must play in highlighted sub-board ({bi+1}, {bj+1})."
+
+    def _blend(self, base, tint, factor):
+        return tuple((1 - factor) * b + factor * t for b, t in zip(base, tint))
 
     def show_result(self):
         w = self.game.check_true_win()
@@ -130,6 +160,20 @@ class BoardGrid(GridLayout):
             self.status_label.text = "O (YOU) WIN!"
         else:
             self.status_label.text = "It's a TIE!"
+
+    def update_grid_lines(self, *args):
+        self.canvas.after.clear()
+        with self.canvas.after:
+            Color(rgba=self.grid_line_color)
+
+            cw = self.width / 9.0
+            ch = self.height / 9.0
+            x0, y0 = self.x, self.y
+
+            for i in range(10):
+                width = 3 if i % 3 == 0 else 1
+                Line(points=[x0 + i * cw, y0, x0 + i * cw, y0 + self.height], width=width)
+                Line(points=[x0, y0 + i * ch, x0 + self.width, y0 + i * ch], width=width)
 
 
 class UTTTApp(App):
