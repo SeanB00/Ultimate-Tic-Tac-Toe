@@ -11,6 +11,7 @@ from multiprocessing import Pool
 class UltimateTicTacToeGame:
     def __init__(self):
         # Only one board now:
+
         self.board_rep = np.array([[0 for _ in range(9)] for _ in range(9)])
         self.full_board = np.zeros((3, 3, 3, 3), dtype=int)
         self.sub_boards = np.zeros((3, 3), dtype=int)
@@ -127,6 +128,8 @@ class UltimateTicTacToeGame:
     def agent_smart_move(self):
 
         # 1) Winning move?
+
+
         winning = self.find_winning_move()
         if winning is not None:
             bi, bj, r, c = winning
@@ -156,7 +159,7 @@ class UltimateTicTacToeGame:
                     bi0, bj0 = self.curr_board
 
                     for (r, c) in self.empty_places[bi0][bj0]:
-                        if (r, c) != threat:  # avoiding sending opp into the meta-threat board
+                        if (r, c) != threat and (r,c) in self.empty_sub_places:  # avoiding sending opp into the meta-threat board
                             safe_moves.append((bi0, bj0, r, c))
 
                     if safe_moves:
@@ -203,9 +206,9 @@ class UltimateTicTacToeGame:
             for (r, c) in self.empty_places[bi][bj]:
 
                 # simulate move
-                self.full_board[bi][bj][r][c] = self.agent_symbol
+                self.place_in_rep(bi,bj,r,c,self.agent_symbol)
                 board_int = self.get_board_int()
-                self.full_board[bi][bj][r][c] = 0
+                self.place_in_rep(bi,bj,r,c,0)
 
                 if board_int in self.q_table:
                     score, _ = self.q_table[board_int]
@@ -225,6 +228,7 @@ class UltimateTicTacToeGame:
             return self.apply_agent_move(bi, bj, r, c)
 
         # Apply best move
+
         return self.apply_agent_move(*best)
 
     def apply_agent_move(self, bi, bj, r, c):
@@ -284,6 +288,7 @@ class UltimateTicTacToeGame:
                         return (i, 2 - i)
 
         return None
+
 
 
 
@@ -434,11 +439,10 @@ class UltimateTicTacToeGame:
                     elif self.curr_board == threat:
                         r, c = real_threat
                     else:
-                        copy = set(self.empty_places[self.curr_board[0]][self.curr_board[1]])
-                        if threat in copy:
-                            copy.remove(threat)
+                        empty = self.empty_places[self.curr_board[0]][self.curr_board[1]]
+                        copy = [val for val in empty if val != threat and val in self.empty_sub_places]
                         if len(copy) > 0:
-                            r, c = random.choice(tuple(copy))
+                           r, c = random.choice(copy)
 
         # Apply move
         self.full_board[bi][bj][r][c] = self.agent_symbol
@@ -559,7 +563,7 @@ class UltimateTicTacToeGame:
             # exploitation
             self.agent_smart_move()
 
-    def play_one_game(self, epsilon=0.1, training=True):
+    def play_one_game(self, epsilon=0.1, training=False):
         self.init_game()
         boards = []
 
@@ -747,12 +751,12 @@ if __name__ == "__main__":
     import multiprocessing
     cores = multiprocessing.cpu_count()
     games = Games(
-        num_games=500_000,
+        num_games=2_500,
         processes=cores,
         log_every=1000,
         chunk_size=100
     )
-    games.train()
+    games.run()
     print("Agent win rate:", (games.agent_wins / games.num_games) * 100)
     print("Player win rate:", (games.player_wins / games.num_games) * 100)
     print("Tie rate:", (games.ties / games.num_games) * 100)
