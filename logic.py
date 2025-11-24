@@ -135,54 +135,52 @@ class UltimateTicTacToeGame:
             bi, bj, r, c = winning
             return self.apply_agent_move(bi, bj, r, c)
 
-        # 2) Meta threat?
-        threat = self.find_meta_block()
-        if threat is not None:
-            real_threat = self.find_immidiate_danger(*threat)
+        # 2) Meta threats? Block any sub-board that would let the opponent win meta-board
+        threats = self.find_meta_block()
+        if threats:
+            immediate_threats = {}
 
-            if real_threat is not None:
+            for threat in threats:
+                real_threats = self.find_immidiate_danger(*threat)
+                if real_threats:
+                    immediate_threats[threat] = real_threats
 
+            if immediate_threats:
                 # 2A) Can block directly?
                 if self.curr_board is None:
-                    bi, bj = threat
-                    r, c = real_threat
-                    return self.apply_agent_move(bi, bj, r, c)
+                    block_moves = [(bi, bj, r, c)
+                                   for (bi, bj), cells in immediate_threats.items()
+                                   for (r, c) in cells]
 
-                elif self.curr_board == threat:
-                    bi, bj = threat
-                    r, c = real_threat
-                    return self.apply_agent_move(bi, bj, r, c)
+                    best = self._select_best_move(block_moves)
+                    if best is None:
+                        best = random.choice(block_moves)
+                    return self.apply_agent_move(*best)
 
-                # 2B) Cannot block — avoid sending opponent into the threat board
+                elif self.curr_board in immediate_threats:
+                    bi, bj = self.curr_board
+                    block_moves = [(bi, bj, r, c) for (r, c) in immediate_threats[(bi, bj)]]
+
+                    best = self._select_best_move(block_moves)
+                    if best is None:
+                        best = random.choice(block_moves)
+                    return self.apply_agent_move(*best)
+
+                # 2B) Cannot block — avoid sending opponent into any threat board
                 else:
                     safe_moves = []
                     bi0, bj0 = self.curr_board
+                    threat_boards = set(immediate_threats.keys())
 
                     for (r, c) in self.empty_places[bi0][bj0]:
-                        if (r, c) != threat and (r,c) in self.empty_sub_places:  # avoiding sending opp into the meta-threat board
+                        if (r, c) not in threat_boards and (r, c) in self.empty_sub_places:
                             safe_moves.append((bi0, bj0, r, c))
 
                     if safe_moves:
-                        # choose best safe move from Q-table
-                        best = None
-                        best_score = -999
-
-                        for bi, bj, r, c in safe_moves:
-                            self.full_board[bi][bj][r][c] = self.agent_symbol
-                            board_int = self.get_board_int()
-                            self.full_board[bi][bj][r][c] = 0
-
-                            if board_int in self.q_table:
-                                score, _ = self.q_table[board_int]
-
-                                if score > best_score:
-                                    best_score = score
-                                    best = (bi, bj, r, c)
-
-                        if best is not None:
-                            return self.apply_agent_move(*best)
-                        else:
-                            return self.apply_agent_move(*random.choice(tuple(safe_moves)))
+                        best = self._select_best_move(safe_moves)
+                        if best is None:
+                            best = random.choice(safe_moves)
+                        return self.apply_agent_move(*best)
                     # fallback: no safe moves → choose randomly
                     bi, bj = self.curr_board
                     r, c = random.choice(tuple(self.empty_places[bi][bj]))
@@ -199,33 +197,15 @@ class UltimateTicTacToeGame:
             else:
                 playable_boards = tuple(self.empty_sub_places)
 
-        best = None
-        best_score = -999
+        all_moves = [(bi, bj, r, c)
+                     for (bi, bj) in playable_boards
+                     for (r, c) in self.empty_places[bi][bj]]
 
-        for (bi, bj) in playable_boards:
-            for (r, c) in self.empty_places[bi][bj]:
-
-                # simulate move
-                self.place_in_rep(bi,bj,r,c,self.agent_symbol)
-                board_int = self.get_board_int()
-                self.place_in_rep(bi,bj,r,c,0)
-
-                if board_int in self.q_table:
-                    score, _ = self.q_table[board_int]
-
-                    if score > best_score:
-                        best_score = score
-                        best = (bi, bj, r, c)
+        best = self._select_best_move(all_moves)
 
         # If no best found → fallback
         if best is None:
-            if self.curr_board is None:
-                bi, bj = random.choice(tuple(self.empty_sub_places))
-            else:
-                bi, bj = self.curr_board
-
-            r, c = random.choice(tuple(self.empty_places[bi][bj]))
-            return self.apply_agent_move(bi, bj, r, c)
+            best = random.choice(all_moves)
 
         # Apply best move
 
@@ -245,31 +225,48 @@ class UltimateTicTacToeGame:
         self.curr_board = None if self.sub_board_is_done(*next_board) else next_board
         return
 
+    def _select_best_move(self, moves):
+        best = None
+        best_score = -999
+
+        for bi, bj, r, c in moves:
+            self.place_in_rep(bi, bj, r, c, self.agent_symbol)
+            board_int = self.get_board_int()
+            self.place_in_rep(bi, bj, r, c, 0)
+
+            if board_int in self.q_table:
+                score, _ = self.q_table[board_int]
+
+                if score > best_score:
+                    best_score = score
+                    best = (bi, bj, r, c)
+
+        return best
+
     def find_meta_block(self):
         """
-        Return (bi, bj) of the sub-board we MUST contest
+        Return list of (bi, bj) sub-boards we MUST contest
         because the opponent has 2-in-a-row in the meta-board.
-        Returns None if no global threat exists.
         """
         opp = self.player_symbol
         sb = self.sub_boards  # 3x3 matrix of {-1,0,1}
+        threats = set()
 
         # Rows
         for i in range(3):
             row = sb[i]
             if np.sum(row) == 2 * opp:
                 for j in range(3):
-                    if row[j] == 0:
-                        return (i, j)
+                    if row[j] == 0 and (i, j) in self.empty_sub_places:
+                        threats.add((i, j))
 
         # Columns
         for j in range(3):
             col = sb[:, j]
             if np.sum(col) == 2 * opp:
                 for i in range(3):
-                    if col[i] == 0:
-                        if (i, j) in self.empty_sub_places:
-                            return (i, j)
+                    if col[i] == 0 and (i, j) in self.empty_sub_places:
+                        threats.add((i, j))
 
         # Main diagonal
         diag = np.array([sb[i][i] for i in range(3)])
@@ -277,7 +274,7 @@ class UltimateTicTacToeGame:
             for i in range(3):
                 if sb[i][i] == 0:
                     if (i, i) in self.empty_sub_places:
-                        return (i, i)
+                        threats.add((i, i))
 
         # Anti-diagonal
         diag2 = np.array([sb[i][2 - i] for i in range(3)])
@@ -285,9 +282,9 @@ class UltimateTicTacToeGame:
             for i in range(3):
                 if sb[i][2 - i] == 0:
                     if (i, 2-i) in self.empty_sub_places:
-                        return (i, 2 - i)
+                        threats.add((i, 2 - i))
 
-        return None
+        return list(threats)
 
 
 
@@ -296,6 +293,7 @@ class UltimateTicTacToeGame:
     def find_immidiate_danger(self, r, c):
         opp = self.player_symbol
         sb = self.full_board[r][c]  # 3x3 matrix of {-1,0,1}
+        dangers = []
 
         # Rows
         for i in range(3):
@@ -303,7 +301,7 @@ class UltimateTicTacToeGame:
             if np.sum(row) == 2 * opp:
                 for j in range(3):
                     if row[j] == 0:
-                        return (i, j)
+                        dangers.append((i, j))
 
         # Columns
         for j in range(3):
@@ -311,21 +309,23 @@ class UltimateTicTacToeGame:
             if np.sum(col) == 2 * opp:
                 for i in range(3):
                     if col[i] == 0:
-                        return (i, j)
+                        dangers.append((i, j))
 
         # Main diagonal
         diag = np.array([sb[i][i] for i in range(3)])
         if np.sum(diag) == 2 * opp:
             for i in range(3):
                 if sb[i][i] == 0:
-                    return (i, i)
+                    dangers.append((i, i))
 
         # Anti-diagonal
         diag2 = np.array([sb[i][2 - i] for i in range(3)])
         if np.sum(diag2) == 2 * opp:
             for i in range(3):
                 if sb[i][2 - i] == 0:
-                    return (i, 2 - i)
+                    dangers.append((i, 2 - i))
+
+        return dangers
 
     def find_winning_move(self):
 
@@ -429,18 +429,30 @@ class UltimateTicTacToeGame:
         if winning is not None:
             bi,bj,r,c = winning
         else:
-            threat = self.find_meta_block()
-            if threat is not None:
-                real_threat = self.find_immidiate_danger(*threat)
-                if real_threat is not None:
+            threats = self.find_meta_block()
+            if threats:
+                immediate_threats = {}
+
+                for threat in threats:
+                    real_threats = self.find_immidiate_danger(*threat)
+                    if real_threats:
+                        immediate_threats[threat] = real_threats
+
+                if immediate_threats:
                     if self.curr_board is None:
-                        bi, bj = threat
-                        r, c = real_threat
-                    elif self.curr_board == threat:
-                        r, c = real_threat
+                        block_moves = [(bi, bj, r, c)
+                                       for (bi, bj), cells in immediate_threats.items()
+                                       for (r, c) in cells]
+                        if block_moves:
+                            bi, bj, r, c = random.choice(block_moves)
+                    elif self.curr_board in immediate_threats:
+                        moves = [(self.curr_board[0], self.curr_board[1], r, c) for (r, c) in immediate_threats[self.curr_board]]
+                        if moves:
+                            bi, bj, r, c = random.choice(moves)
                     else:
+                        threat_boards = set(immediate_threats.keys())
                         empty = self.empty_places[self.curr_board[0]][self.curr_board[1]]
-                        copy = [val for val in empty if val != threat and val in self.empty_sub_places]
+                        copy = [val for val in empty if val not in threat_boards and val in self.empty_sub_places]
                         if len(copy) > 0:
                            r, c = random.choice(copy)
 
