@@ -1,20 +1,37 @@
-
 import time
-
 import numpy as np
 import random
 import hashing
 from multiprocessing import Pool
 
+# =====================================================================
+# HYPERPARAMETERS
+# =====================================================================
+ALPHA = 0.1          # Learning rate for TD(0) updates
+EPS_START = 1.0      # Starting epsilon (full exploration)
+EPS_END = 0.05       # Final epsilon (mostly exploitation)
+
+# =====================================================================
+# GLOBAL Q-TABLE FOR WORKERS (set once per worker via init_worker)
+# =====================================================================
+GLOBAL_QTABLE = None
 
 
+def init_worker(qtable):
+    """Called ONCE per worker process. Sets read-only global Q-table."""
+    global GLOBAL_QTABLE
+    GLOBAL_QTABLE = qtable
+
+
+# =====================================================================
+# ULTIMATE TIC TAC TOE GAME ENGINE
+# =====================================================================
 class UltimateTicTacToeGame:
-    def __init__(self):
-        # Only one board now:
-
-        self.board_rep = np.array([[0 for _ in range(9)] for _ in range(9)])
-        self.full_board = np.zeros((3, 3, 3, 3), dtype=int)
-        self.sub_boards = np.zeros((3, 3), dtype=int)
+    def __init__(self, q_table=None, training=False, multiprocess=False):
+        # Board representations
+        self.board_rep = np.zeros((9, 9), dtype=int)        # global 9x9
+        self.full_board = np.zeros((3, 3, 3, 3), dtype=int) # 3x3 subboards of 3x3
+        self.sub_boards = np.zeros((3, 3), dtype=int)       # meta board
 
         self.player_symbol = -1
         self.agent_symbol = 1
@@ -23,475 +40,36 @@ class UltimateTicTacToeGame:
         self.empty_sub_places = self.get_empty_sub_places()
         self.curr_board = None
 
-        # Q-table stored in fast binary format
-        self.q_table = hashing.load_qtable("q.pkl")
+        # Q-table handling
+        if q_table is None:
+            self.q_table = hashing.load_qtable("q.pkl")  # MAIN ONLY
+        else:
+            self.q_table = q_table  # MULTIPROCESS READ-ONLY view
+
+        self.training = training
+        self.multiprocess = multiprocess
 
         self.gamma = 0.9
         self.board_score_list = []
         self.players = {0: "-", 1: "X", -1: "O"}
 
-
-    # ---------------------------------------------------------
-    # Utility: Generates the set of empty cells for each sub-board
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------
+    # Utility: Empty cell maps
+    # ------------------------------------------------------------
     def get_empty_places(self):
-        return [[{(i, j) for i in range(3) for j in range(3)} for _ in range(3)] for _ in range(3)]
+        return [
+            [{(i, j) for i in range(3) for j in range(3)} for _ in range(3)]
+            for _ in range(3)
+        ]
 
     def get_empty_sub_places(self):
         return {(i, j) for i in range(3) for j in range(3)}
 
-    # ---------------------------------------------------------
-    # Win/tie checks
-    # ---------------------------------------------------------
-    def check_win(self, board):
-        # Rows
-        for row in board:
-            s = np.sum(row)
-            if s == 3: return 1
-            if s == -3: return -1
-
-        # Columns
-        for col in range(3):
-            s = np.sum(board[:, col])
-            if s == 3: return 1
-            if s == -3: return -1
-
-        # Diagonals
-        diag = np.trace(board)
-        if diag == 3: return 1
-        if diag == -3: return -1
-
-        diag2 = np.trace(np.fliplr(board))
-        if diag2 == 3: return 1
-        if diag2 == -3: return -1
-
-        return 0
-
-    def tie(self, board, empty):
-        return len(empty) == 0 and self.check_win(board) == 0
-
-    def sub_board_is_done(self, i, j):
-        return (len(self.empty_places[i][j]) == 0) or (self.sub_boards[i][j] != 0)
-
-    # ---------------------------------------------------------
-    # Board indexing utilities
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------
+    # Basic board helpers (back from your original code)
+    # ------------------------------------------------------------
     def global_board(self):
         return self.board_rep
-
-    def get_global_position(self, bi, bj, r, c):
-        return bi * 3 + r, bj * 3 + c
-
-    # ---------------------------------------------------------
-    # Moves
-    # ---------------------------------------------------------
-    def update_q_table(self):
-
-        for board, score in self.board_score_list:
-            if board in self.q_table:
-                avg, num_appeared = self.q_table[board]
-                self.q_table[board] = ((avg * num_appeared + score) / (num_appeared + 1), num_appeared + 1)
-            else:
-                self.q_table[board] = (score, 1)
-
-
-    def place_in_rep(self,bi,bj,i,j,symbol):
-
-
-        self.board_rep[self.get_global_position(bi,bj,i,j)] = symbol
-
-    def player_random_move(self):
-        if self.curr_board is None:
-            bi, bj = random.choice(tuple(self.empty_sub_places))
-        else:
-            bi, bj = self.curr_board
-
-        r, c = random.choice(tuple(self.empty_places[bi][bj]))
-
-        # Apply move
-        self.full_board[bi][bj][r][c] = self.player_symbol
-        self.place_in_rep(bi,bj,r,c,self.player_symbol)
-
-        # Remove from empty cells
-        self.empty_places[bi][bj].remove((r, c))
-        next_board = (r, c)
-
-        # Check sub-board win/tie
-        win_status = self.check_win(self.full_board[bi][bj])
-        if win_status != 0 or self.tie(self.full_board[bi][bj], self.empty_places[bi][bj]):
-            self.sub_boards[bi][bj] = win_status
-            self.empty_sub_places.remove((bi, bj))
-
-        # Determine next forced board
-        self.curr_board = None if self.sub_board_is_done(*next_board) else next_board
-
-    def agent_smart_move(self):
-
-        # 1) Winning move?
-
-
-        winning = self.find_winning_move()
-        if winning is not None:
-            bi, bj, r, c = winning
-            return self.apply_agent_move(bi, bj, r, c)
-
-        # 2) Meta threats? Block any sub-board that would let the opponent win meta-board
-        threats = self.find_meta_block()
-        if threats:
-            immediate_threats = {}
-
-            for threat in threats:
-                real_threats = self.find_immidiate_danger(*threat)
-                if real_threats:
-                    immediate_threats[threat] = real_threats
-
-            if immediate_threats:
-                # 2A) Can block directly?
-                if self.curr_board is None:
-                    block_moves = [(bi, bj, r, c)
-                                   for (bi, bj), cells in immediate_threats.items()
-                                   for (r, c) in cells]
-
-                    best = self._select_best_move(block_moves)
-                    if best is None:
-                        best = random.choice(block_moves)
-                    return self.apply_agent_move(*best)
-
-                elif self.curr_board in immediate_threats:
-                    bi, bj = self.curr_board
-                    block_moves = [(bi, bj, r, c) for (r, c) in immediate_threats[(bi, bj)]]
-
-                    best = self._select_best_move(block_moves)
-                    if best is None:
-                        best = random.choice(block_moves)
-                    return self.apply_agent_move(*best)
-
-                # 2B) Cannot block — avoid sending opponent into any threat board
-                else:
-                    safe_moves = []
-                    bi0, bj0 = self.curr_board
-                    threat_boards = set(immediate_threats.keys())
-
-                    for (r, c) in self.empty_places[bi0][bj0]:
-                        if (r, c) not in threat_boards and (r, c) in self.empty_sub_places:
-                            safe_moves.append((bi0, bj0, r, c))
-
-                    if safe_moves:
-                        best = self._select_best_move(safe_moves)
-                        if best is None:
-                            best = random.choice(safe_moves)
-                        return self.apply_agent_move(*best)
-                    # fallback: no safe moves → choose randomly
-                    bi, bj = self.curr_board
-                    r, c = random.choice(tuple(self.empty_places[bi][bj]))
-                    return self.apply_agent_move(bi, bj, r, c)
-
-        # 3) No threats → evaluate all moves normally
-
-        # Determine playable boards
-        if self.curr_board is None:
-            playable_boards = tuple(self.empty_sub_places)
-        else:
-            if self.curr_board in self.empty_sub_places:
-                playable_boards = [self.curr_board]
-            else:
-                playable_boards = tuple(self.empty_sub_places)
-
-        all_moves = [(bi, bj, r, c)
-                     for (bi, bj) in playable_boards
-                     for (r, c) in self.empty_places[bi][bj]]
-
-        best = self._select_best_move(all_moves)
-
-        # If no best found → fallback
-        if best is None:
-            best = random.choice(all_moves)
-
-        # Apply best move
-
-        return self.apply_agent_move(*best)
-
-    def apply_agent_move(self, bi, bj, r, c):
-        self.full_board[bi][bj][r][c] = self.agent_symbol
-        self.place_in_rep(bi,bj,r,c,self.agent_symbol)
-        self.empty_places[bi][bj].remove((r, c))
-        next_board = (r, c)
-
-        ws = self.check_win(self.full_board[bi][bj])
-        if ws != 0 or self.tie(self.full_board[bi][bj], self.empty_places[bi][bj]):
-            self.sub_boards[bi][bj] = ws
-            self.empty_sub_places.remove((bi, bj))
-
-        self.curr_board = None if self.sub_board_is_done(*next_board) else next_board
-        return
-
-    def _select_best_move(self, moves):
-        best = None
-        best_score = -999
-
-        for bi, bj, r, c in moves:
-            self.place_in_rep(bi, bj, r, c, self.agent_symbol)
-            board_int = self.get_board_int()
-            self.place_in_rep(bi, bj, r, c, 0)
-
-            if board_int in self.q_table:
-                score, _ = self.q_table[board_int]
-
-                if score > best_score:
-                    best_score = score
-                    best = (bi, bj, r, c)
-
-        return best
-
-    def find_meta_block(self):
-        """
-        Return list of (bi, bj) sub-boards we MUST contest
-        because the opponent has 2-in-a-row in the meta-board.
-        """
-        opp = self.player_symbol
-        sb = self.sub_boards  # 3x3 matrix of {-1,0,1}
-        threats = set()
-
-        # Rows
-        for i in range(3):
-            row = sb[i]
-            if np.sum(row) == 2 * opp:
-                for j in range(3):
-                    if row[j] == 0 and (i, j) in self.empty_sub_places:
-                        threats.add((i, j))
-
-        # Columns
-        for j in range(3):
-            col = sb[:, j]
-            if np.sum(col) == 2 * opp:
-                for i in range(3):
-                    if col[i] == 0 and (i, j) in self.empty_sub_places:
-                        threats.add((i, j))
-
-        # Main diagonal
-        diag = np.array([sb[i][i] for i in range(3)])
-        if np.sum(diag) == 2 * opp:
-            for i in range(3):
-                if sb[i][i] == 0:
-                    if (i, i) in self.empty_sub_places:
-                        threats.add((i, i))
-
-        # Anti-diagonal
-        diag2 = np.array([sb[i][2 - i] for i in range(3)])
-        if np.sum(diag2) == 2 * opp:
-            for i in range(3):
-                if sb[i][2 - i] == 0:
-                    if (i, 2-i) in self.empty_sub_places:
-                        threats.add((i, 2 - i))
-
-        return list(threats)
-
-
-
-
-
-    def find_immidiate_danger(self, r, c):
-        opp = self.player_symbol
-        sb = self.full_board[r][c]  # 3x3 matrix of {-1,0,1}
-        dangers = []
-
-        # Rows
-        for i in range(3):
-            row = sb[i]
-            if np.sum(row) == 2 * opp:
-                for j in range(3):
-                    if row[j] == 0:
-                        dangers.append((i, j))
-
-        # Columns
-        for j in range(3):
-            col = sb[:, j]
-            if np.sum(col) == 2 * opp:
-                for i in range(3):
-                    if col[i] == 0:
-                        dangers.append((i, j))
-
-        # Main diagonal
-        diag = np.array([sb[i][i] for i in range(3)])
-        if np.sum(diag) == 2 * opp:
-            for i in range(3):
-                if sb[i][i] == 0:
-                    dangers.append((i, i))
-
-        # Anti-diagonal
-        diag2 = np.array([sb[i][2 - i] for i in range(3)])
-        if np.sum(diag2) == 2 * opp:
-            for i in range(3):
-                if sb[i][2 - i] == 0:
-                    dangers.append((i, 2 - i))
-
-        return dangers
-
-    def find_winning_move(self):
-
-        # Determine which sub-boards we are allowed to play in
-        if self.curr_board is None:
-            boards_to_check = self.empty_sub_places
-        else:
-            if self.curr_board in self.empty_sub_places:
-                boards_to_check = {self.curr_board}
-            else:
-                boards_to_check = self.empty_sub_places
-
-        # Loop through playable boards
-        for (bi, bj) in boards_to_check:
-
-            sb = self.full_board[bi][bj]
-            won = self.sub_boards.copy()
-
-            # Check each empty move in this sub-board
-            for (r, c) in self.empty_places[bi][bj]:
-
-                # Check if placing here wins the sub-board
-                if self._wins_subboard(sb, self.agent_symbol, r, c):
-
-                    # Pretend this sub-board is won
-                    won[bi][bj] = self.agent_symbol
-
-                    # See if this produces a meta-win
-                    if self._wins_meta(won, bi, bj, self.agent_symbol):
-                        return bi, bj, r, c
-
-                    # Undo is not needed because we used a copy
-
-        return None
-
-    def _wins_subboard(self, sb, player, r, c):
-        # Check the row
-        if (sb[r][0] == player or (r, 0) == (r, c)) and \
-                (sb[r][1] == player or (r, 1) == (r, c)) and \
-                (sb[r][2] == player or (r, 2) == (r, c)):
-            return True
-
-        # Check the column
-        if (sb[0][c] == player or (0, c) == (r, c)) and \
-                (sb[1][c] == player or (1, c) == (r, c)) and \
-                (sb[2][c] == player or (2, c) == (r, c)):
-            return True
-
-        # Main diag
-        if r == c:
-            if (sb[0][0] == player or (0, 0) == (r, c)) and \
-                    (sb[1][1] == player or (1, 1) == (r, c)) and \
-                    (sb[2][2] == player or (2, 2) == (r, c)):
-                return True
-
-        # Anti diag
-        if r + c == 2:
-            if (sb[0][2] == player or (0, 2) == (r, c)) and \
-                    (sb[1][1] == player or (1, 1) == (r, c)) and \
-                    (sb[2][0] == player or (2, 0) == (r, c)):
-                return True
-
-        return False
-
-    def _wins_meta(self, won, bi, bj, player):
-
-        # Row in meta
-        if np.all(won[bi] == player):
-            return True
-
-        # Column in meta
-        if np.all(won[:, bj] == player):
-            return True
-
-        # Main diagonal
-        if bi == bj:
-            if won[0][0] == player and won[1][1] == player and won[2][2] == player:
-                return True
-
-        # Anti diagonal
-        if bi + bj == 2:
-            if won[0][2] == player and won[1][1] == player and won[2][0] == player:
-                return True
-
-        return False
-
-    def agent_random_move(self):
-
-        # GLOBAL BLOCK: opponent is about to win meta-board
-
-        # Decide playable boards
-
-        if self.curr_board is None:
-            bi, bj = random.choice(tuple(self.empty_sub_places))
-        else:
-            bi, bj = self.curr_board
-        r, c = random.choice(tuple(self.empty_places[bi][bj]))
-
-
-        winning = self.find_winning_move()
-        if winning is not None:
-            bi,bj,r,c = winning
-        else:
-            threats = self.find_meta_block()
-            if threats:
-                immediate_threats = {}
-
-                for threat in threats:
-                    real_threats = self.find_immidiate_danger(*threat)
-                    if real_threats:
-                        immediate_threats[threat] = real_threats
-
-                if immediate_threats:
-                    if self.curr_board is None:
-                        block_moves = [(bi, bj, r, c)
-                                       for (bi, bj), cells in immediate_threats.items()
-                                       for (r, c) in cells]
-                        if block_moves:
-                            bi, bj, r, c = random.choice(block_moves)
-                    elif self.curr_board in immediate_threats:
-                        moves = [(self.curr_board[0], self.curr_board[1], r, c) for (r, c) in immediate_threats[self.curr_board]]
-                        if moves:
-                            bi, bj, r, c = random.choice(moves)
-                    else:
-                        threat_boards = set(immediate_threats.keys())
-                        empty = self.empty_places[self.curr_board[0]][self.curr_board[1]]
-                        copy = [val for val in empty if val not in threat_boards and val in self.empty_sub_places]
-                        if len(copy) > 0:
-                           r, c = random.choice(copy)
-
-        # Apply move
-        self.full_board[bi][bj][r][c] = self.agent_symbol
-        self.place_in_rep(bi,bj,r,c,self.agent_symbol)
-        self.empty_places[bi][bj].remove((r, c))
-        next_board = (r, c)
-
-        # Check sub-board win/tie
-        ws = self.check_win(self.full_board[bi][bj])
-        if ws != 0 or self.tie(self.full_board[bi][bj], self.empty_places[bi][bj]):
-            self.sub_boards[bi][bj] = ws
-            self.empty_sub_places.remove((bi, bj))
-
-        # Next forced board
-        self.curr_board = None if self.sub_board_is_done(*next_board) else next_board
-
-
-
-
-    # ---------------------------------------------------------
-    # Game state logic
-    # ---------------------------------------------------------
-    def check_true_win(self):
-        return self.check_win(self.sub_boards)
-
-    def check_true_tie(self):
-        return len(self.empty_sub_places) == 0 and self.check_true_win() == 0
-
-    def get_playable_boards(self):
-        """Return a set of sub-board coordinates that can be played now."""
-        if self.curr_board is None:
-            return set(self.empty_sub_places)
-
-        if self.curr_board in self.empty_sub_places:
-            return {self.curr_board}
-
-        return set(self.empty_sub_places)
 
     def init_game(self):
         self.full_board = np.zeros((3, 3, 3, 3), dtype=int)
@@ -499,16 +77,19 @@ class UltimateTicTacToeGame:
         self.empty_places = self.get_empty_places()
         self.empty_sub_places = self.get_empty_sub_places()
         self.curr_board = None
-        self.board_rep = np.array([[0 for _ in range(9)] for _ in range(9)])
-
+        self.board_rep = np.zeros((9, 9), dtype=int)
         self.board_score_list = []
 
     def is_game_running(self):
         return self.check_true_win() == 0 and not self.check_true_tie()
 
-    # ---------------------------------------------------------
-    # Display utilities
-    # ---------------------------------------------------------
+    def get_playable_boards(self):
+        if self.curr_board is None:
+            return set(self.empty_sub_places)
+        if self.curr_board in self.empty_sub_places:
+            return {self.curr_board}
+        return set(self.empty_sub_places)
+
     def print_board(self):
         board = self.global_board()
         s = ""
@@ -524,264 +105,629 @@ class UltimateTicTacToeGame:
         print(s)
         print("-" * 9)
 
-    # ---------------------------------------------------------
-    # Hashing utilities
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------
+    # Win logic
+    # ------------------------------------------------------------
+    def check_win(self, board):
+        # rows
+        for row in board:
+            s = np.sum(row)
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
 
-    def all_symmetries_fast(self, board):
+        # columns
+        for c in range(3):
+            s = np.sum(board[:, c])
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+
+        # diagonals
+        d1 = np.trace(board)
+        if d1 == 3:
+            return 1
+        if d1 == -3:
+            return -1
+
+        d2 = np.trace(np.fliplr(board))
+        if d2 == 3:
+            return 1
+        if d2 == -3:
+            return -1
+
+        return 0
+
+    def tie(self, board, empty):
+        return len(empty) == 0 and self.check_win(board) == 0
+
+    def sub_board_is_done(self, bi, bj):
+        return len(self.empty_places[bi][bj]) == 0 or self.sub_boards[bi][bj] != 0
+
+    # ------------------------------------------------------------
+    # Place piece in global representation
+    # ------------------------------------------------------------
+    def get_global_position(self, bi, bj, r, c):
+        return bi * 3 + r, bj * 3 + c
+
+    def place_in_rep(self, bi, bj, r, c, symbol):
+        gi, gj = self.get_global_position(bi, bj, r, c)
+        self.board_rep[gi][gj] = symbol
+
+    # ------------------------------------------------------------
+    # Q-table update (single process ONLY) - TD(0) with ALPHA
+    # ------------------------------------------------------------
+    def update_q_table(self):
         """
-        Return the 8 symmetries of a square board using fast flips + transpose.
-        board: numpy array (9x9)
+        Apply TD(0)-style updates to the global Q-table using
+        the targets in self.board_score_list.
+
+        Each entry is (state_int, target_value), and we do:
+        Q <- Q + ALPHA * (target - Q)
+        We still keep count as metadata.
         """
-        b = board
-        bt = b.T  # transpose = main diagonal reflection
+        for board_int, target in self.board_score_list:
+            if board_int in self.q_table:
+                old_v, count = self.q_table[board_int]
+            else:
+                old_v, count = 0.0, 0
 
-        # flips
-        fh = np.flipud(b)  # horizontal flip (top <-> bottom)
-        fv = np.fliplr(b)  # vertical flip (left <-> right)
+            new_v = old_v + ALPHA * (target - old_v)
+            self.q_table[board_int] = (new_v, count + 1)
 
-        # diagonal flips
-        fd = np.fliplr(bt)  # reflect main diagonal
-        fad = np.flipud(bt)  # reflect anti-diagonal
+    # ------------------------------------------------------------
+    # Random opponent move
+    # ------------------------------------------------------------
+    def player_random_move(self):
+        if self.curr_board is None:
+            bi, bj = random.choice(tuple(self.empty_sub_places))
+        else:
+            bi, bj = self.curr_board
 
-        # rotations
-        r90 = fad  # rotate 90° clockwise
-        r180 = np.flipud(fv)  # rotate 180°
-        r270 = fd  # rotate 270° clockwise
+        r, c = random.choice(tuple(self.empty_places[bi][bj]))
 
-        return [b, r90, r180, r270, fh, fv, fd, fad]
+        self.full_board[bi][bj][r][c] = self.player_symbol
+        self.place_in_rep(bi, bj, r, c, self.player_symbol)
+        self.empty_places[bi][bj].remove((r, c))
 
-    def canonical_board_int(self, board):
-        """
-        Compute canonical integer for board using fast symmetries.
-        board: 9x9 numpy array (global board)
-        """
+        w = self.check_win(self.full_board[bi][bj])
+        if w != 0 or self.tie(self.full_board[bi][bj], self.empty_places[bi][bj]):
+            self.sub_boards[bi][bj] = w
+            self.empty_sub_places.remove((bi, bj))
+
+        next_b = (r, c)
+        self.curr_board = None if self.sub_board_is_done(*next_b) else next_b
+
+    # ------------------------------------------------------------
+    # Agent move selection
+    # ------------------------------------------------------------
+    def agent_train_move(self, epsilon=1.0):
+        if random.random() < epsilon:
+            self.agent_random_move()
+        else:
+            self.agent_smart_move()
+
+    def agent_smart_move(self):
+        win = self.find_winning_move()
+        if win is not None:
+            return self.apply_agent_move(*win)
+
+        threats = self.find_meta_block()
+        if threats:
+            immediate = {}
+            for t in threats:
+                imm = self.find_immidiate_danger(*t)
+                if imm:
+                    immediate[t] = imm
+
+            if immediate:
+                # block move if possible
+                if self.curr_board is None:
+                    moves = [
+                        (bi, bj, r, c)
+                        for (bi, bj), cells in immediate.items()
+                        for (r, c) in cells
+                    ]
+                elif self.curr_board in immediate:
+                    bi, bj = self.curr_board
+                    moves = [(bi, bj, r, c) for (r, c) in immediate[(bi, bj)]]
+                else:
+                    # try to avoid sending opponent into threat boards
+                    safe_moves = []
+                    bi, bj = self.curr_board
+                    forbidden = set(immediate.keys())
+                    for (r, c) in self.empty_places[bi][bj]:
+                        if (r, c) not in forbidden and (r, c) in self.empty_sub_places:
+                            safe_moves.append((bi, bj, r, c))
+                    if safe_moves:
+                        best = self._select_best_move(safe_moves)
+                        if best is None:
+                            best = random.choice(safe_moves)
+                        return self.apply_agent_move(*best)
+                    # no safe move → random legal move
+                    bi, bj = self.curr_board
+                    r, c = random.choice(tuple(self.empty_places[bi][bj]))
+                    return self.apply_agent_move(bi, bj, r, c)
+
+                best = self._select_best_move(moves)
+                if best is None:
+                    best = random.choice(moves)
+                return self.apply_agent_move(*best)
+
+        # otherwise choose best move normally
+        if self.curr_board is None:
+            playable = tuple(self.empty_sub_places)
+        else:
+            playable = (
+                [self.curr_board]
+                if self.curr_board in self.empty_sub_places
+                else tuple(self.empty_sub_places)
+            )
+
+        all_moves = [
+            (bi, bj, r, c)
+            for (bi, bj) in playable
+            for (r, c) in self.empty_places[bi][bj]
+        ]
+
+        best = self._select_best_move(all_moves)
+        if best is None:
+            best = random.choice(all_moves)
+        return self.apply_agent_move(*best)
+
+    def agent_random_move(self):
+        if self.curr_board is None:
+            bi, bj = random.choice(tuple(self.empty_sub_places))
+        else:
+            bi, bj = self.curr_board
+        r, c = random.choice(tuple(self.empty_places[bi][bj]))
+
+        self.full_board[bi][bj][r][c] = self.agent_symbol
+        self.place_in_rep(bi, bj, r, c, self.agent_symbol)
+        self.empty_places[bi][bj].remove((r, c))
+
+        w = self.check_win(self.full_board[bi][bj])
+        if w != 0 or self.tie(self.full_board[bi][bj], self.empty_places[bi][bj]):
+            self.sub_boards[bi][bj] = w
+            self.empty_sub_places.remove((bi, bj))
+
+        next_b = (r, c)
+        self.curr_board = None if self.sub_board_is_done(*next_b) else next_b
+
+    # ------------------------------------------------------------
+    # Apply move
+    # ------------------------------------------------------------
+    def apply_agent_move(self, bi, bj, r, c):
+        self.full_board[bi][bj][r][c] = self.agent_symbol
+        self.place_in_rep(bi, bj, r, c, self.agent_symbol)
+        self.empty_places[bi][bj].remove((r, c))
+
+        w = self.check_win(self.full_board[bi][bj])
+        if w != 0 or self.tie(self.full_board[bi][bj], self.empty_places[bi][bj]):
+            self.sub_boards[bi][bj] = w
+            self.empty_sub_places.remove((bi, bj))
+
+        next_b = (r, c)
+        self.curr_board = None if self.sub_board_is_done(*next_b) else next_b
+
+    # ------------------------------------------------------------
+    # Q-score selection helper
+    # ------------------------------------------------------------
+    def _select_best_move(self, moves):
         best = None
+        best_score = -999
 
-        for sym in self.all_symmetries_fast(board):
-            val = hashing.encode_board_to_int(sym.ravel())
-            if best is None or val < best:
-                best = val
+        for bi, bj, r, c in moves:
+            self.place_in_rep(bi, bj, r, c, self.agent_symbol)
+            board_int = self.get_board_int()
+            self.place_in_rep(bi, bj, r, c, 0)
+
+            if board_int in self.q_table:
+                score, _ = self.q_table[board_int]
+                if score > best_score:
+                    best_score = score
+                    best = (bi, bj, r, c)
 
         return best
 
+    # ------------------------------------------------------------
+    # Threat detection
+    # ------------------------------------------------------------
+    def find_meta_block(self):
+        opp = self.player_symbol
+        sb = self.sub_boards
+        threats = set()
+
+        # rows
+        for i in range(3):
+            if np.sum(sb[i]) == 2 * opp:
+                for j in range(3):
+                    if sb[i][j] == 0 and (i, j) in self.empty_sub_places:
+                        threats.add((i, j))
+
+        # columns
+        for j in range(3):
+            col = sb[:, j]
+            if np.sum(col) == 2 * opp:
+                for i in range(3):
+                    if sb[i][j] == 0 and (i, j) in self.empty_sub_places:
+                        threats.add((i, j))
+
+        # diag
+        diag = [sb[i][i] for i in range(3)]
+        if sum(diag) == 2 * opp:
+            for i in range(3):
+                if sb[i][i] == 0:
+                    threats.add((i, i))
+
+        # anti-diag
+        adiag = [sb[i][2 - i] for i in range(3)]
+        if sum(adiag) == 2 * opp:
+            for i in range(3):
+                if sb[i][2 - i] == 0:
+                    threats.add((i, 2 - i))
+
+        return list(threats)
+
+    def find_immidiate_danger(self, bi, bj):
+        sb = self.full_board[bi][bj]
+        opp = self.player_symbol
+        dangers = []
+
+        # rows
+        for i in range(3):
+            if np.sum(sb[i]) == 2 * opp:
+                for j in range(3):
+                    if sb[i][j] == 0:
+                        dangers.append((i, j))
+
+        # cols
+        for j in range(3):
+            col = sb[:, j]
+            if np.sum(col) == 2 * opp:
+                for i in range(3):
+                    if sb[i][j] == 0:
+                        dangers.append((i, j))
+
+        # diag
+        diag = [sb[i][i] for i in range(3)]
+        if sum(diag) == 2 * opp:
+            for i in range(3):
+                if sb[i][i] == 0:
+                    dangers.append((i, i))
+
+        # anti diag
+        adiag = [sb[i][2 - i] for i in range(3)]
+        if sum(adiag) == 2 * opp:
+            for i in range(3):
+                if sb[i][2 - i] == 0:
+                    dangers.append((i, 2 - i))
+
+        return dangers
+
+    # ------------------------------------------------------------
+    # Winning move finder
+    # ------------------------------------------------------------
+    def find_winning_move(self):
+        if self.curr_board is None:
+            boards = self.empty_sub_places
+        else:
+            boards = (
+                {self.curr_board}
+                if self.curr_board in self.empty_sub_places
+                else self.empty_sub_places
+            )
+
+        for (bi, bj) in boards:
+            sb = self.full_board[bi][bj]
+            meta_copy = self.sub_boards.copy()
+
+            for (r, c) in self.empty_places[bi][bj]:
+                if self._wins_sub(sb, self.agent_symbol, r, c):
+                    meta_copy[bi][bj] = self.agent_symbol
+                    if self._wins_meta(meta_copy, bi, bj, self.agent_symbol):
+                        return bi, bj, r, c
+
+        return None
+
+    # helper: does move (r,c) win the subboard?
+    def _wins_sub(self, sb, player, r, c):
+        # row
+        if all((sb[r][j] == player or (r, j) == (r, c)) for j in range(3)):
+            return True
+        # col
+        if all((sb[i][c] == player or (i, c) == (r, c)) for i in range(3)):
+            return True
+        # diag
+        if r == c:
+            if all((sb[i][i] == player or (i, i) == (r, c)) for i in range(3)):
+                return True
+        # anti diag
+        if r + c == 2:
+            if all((sb[i][2 - i] == player or (i, 2 - i) == (r, c)) for i in range(3)):
+                return True
+        return False
+
+    # helper: meta win
+    def _wins_meta(self, sb, bi, bj, player):
+        # row
+        if all(sb[bi][j] == player for j in range(3)):
+            return True
+        # col
+        if all(sb[i][bj] == player for i in range(3)):
+            return True
+        # diag
+        if bi == bj:
+            if all(sb[i][i] == player for i in range(3)):
+                return True
+        # anti diag
+        if bi + bj == 2:
+            if all(sb[i][2 - i] == player for i in range(3)):
+                return True
+        return False
+
+    # ------------------------------------------------------------
+    # Symmetry hashing
+    # ------------------------------------------------------------
+    def all_symmetries_fast(self, b):
+        bt = b.T
+        fh = np.flipud(b)
+        fv = np.fliplr(b)
+        fd = np.fliplr(bt)
+        fad = np.flipud(bt)
+        r90 = fad
+        r180 = np.flipud(fv)
+        r270 = fd
+        return [b, r90, r180, r270, fh, fv, fd, fad]
+
+    def canonical_board_int(self, board):
+        best = None
+        for sym in self.all_symmetries_fast(board):
+            v = hashing.encode_board_to_int(sym.ravel())
+            if best is None or v < best:
+                best = v
+        return best
+
     def get_board_int(self):
-        # canonical 9x9 representation
-        return self.canonical_board_int(self.global_board())
+        return self.canonical_board_int(self.board_rep)
 
     def get_board_from_int(self, value):
         board = hashing.decode_board_from_int(value)
         return np.array(board).reshape(9, 9)
 
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------
     # Game loop
-    # ---------------------------------------------------------
-    def agent_train_move(self, epsilon=1.1):
-        # ε-greedy policy
-        if random.random() < epsilon:
-            # exploration
-            self.agent_random_move()
-        else:
-            # exploitation
-            self.agent_smart_move()
+    # ------------------------------------------------------------
+    def play_one_game(self, epsilon=1.0, training=None):
+        if training is None:
+            training = self.training
 
-    def play_one_game(self, epsilon=0.1, training=False):
         self.init_game()
-        boards = []
+        states = []
 
-        while self.is_game_running():
+        while True:
+            if self.check_true_win() != 0 or self.check_true_tie():
+                break
 
             if training:
-                self.agent_train_move()
+                self.agent_train_move(epsilon)
             else:
                 self.agent_smart_move()
-            boards.append(self.get_board_int())
-            if not self.is_game_running():
+
+            states.append(self.get_board_int())
+
+            if self.check_true_win() != 0 or self.check_true_tie():
                 break
+
             self.player_random_move()
-            boards.append(self.get_board_int())
+            states.append(self.get_board_int())
 
         winner = self.check_true_win()
-        state = winner
+        score = winner
 
-        boards.reverse()
-        for b in boards:
-            self.board_score_list.append((b, state))
-            state *= self.gamma
+        states.reverse()
+        for s in states:
+            self.board_score_list.append((s, score))
+            score *= self.gamma
 
-        self.update_q_table()
-        return np.array(boards)
+        if not self.multiprocess:
+            self.update_q_table()
+
+        return np.array(states)
+
+    # final win/tie checks
+    def check_true_win(self):
+        return self.check_win(self.sub_boards)
+
+    def check_true_tie(self):
+        return len(self.empty_sub_places) == 0 and self.check_true_win() == 0
 
 
+# =====================================================================
+# WORKER: RUNS A CHUNK OF GAMES AND RETURNS Q-DELTA + STATS
+# =====================================================================
 def run_games_chunk(args):
-    """
-    Run a chunk of games in a separate process.
-
-    args: (num_games_in_chunk, seed)
-    returns:
-        - local_q: dict[int -> (avg, count)]  (local Q-table updates)
-        - agent_wins, player_wins, ties
-        - end_states: list of final board ints (for dataset)
-        - winners: list of winners (1, -1, or 0)
-    """
     num_games, seed = args
 
-    # Make randomness independent across workers
     random.seed(seed)
     np.random.seed(seed)
 
-    game = UltimateTicTacToeGame()
+    game = UltimateTicTacToeGame(
+        q_table=GLOBAL_QTABLE,
+        training=True,
+        multiprocess=True,
+    )
+
     local_q = {}
+    agent_w = player_w = ties = 0
 
-    agent_wins = player_wins = ties = 0
-    end_states = []
-    winners = []
+    for i in range(num_games):
+        # simple per-chunk epsilon schedule: EPS_START -> EPS_END
+        if num_games > 1:
+            frac = i / (num_games - 1)
+        else:
+            frac = 1.0
+        epsilon = EPS_START + frac * (EPS_END - EPS_START)
+        game.play_one_game(epsilon=epsilon, training=True)
+        w = game.check_true_win()
 
-    for _ in range(num_games):
-        boards = game.play_one_game()
-        winner = game.check_true_win()
-
-        # stats
-        if winner == 1:
-            agent_wins += 1
-        elif winner == -1:
-            player_wins += 1
+        if w == 1:
+            agent_w += 1
+        elif w == -1:
+            player_w += 1
         else:
             ties += 1
 
-        winners.append(winner)
-        end_states.append(boards[0])  # keep as int here
-
-        # merge this game's board_score_list into local_q
-        for board_int, reward in game.board_score_list:
-            if board_int in local_q:
-                avg, count = local_q[board_int]
-                new_avg = (avg * count + reward) / (count + 1)
-                local_q[board_int] = (new_avg, count + 1)
+        # aggregate targets for each state in this chunk
+        for b, target in game.board_score_list:
+            if b in local_q:
+                avg, c = local_q[b]
+                new_avg = (avg * c + target) / (c + 1)
+                local_q[b] = (new_avg, c + 1)
             else:
-                local_q[board_int] = (reward, 1)
+                local_q[b] = (target, 1)
 
-    return local_q, agent_wins, player_wins, ties, end_states, winners
+        game.board_score_list.clear()
+
+    return local_q, agent_w, player_w, ties
 
 
-
+# =====================================================================
+# TRAINING MANAGER
+# =====================================================================
 class Games:
-
     def __init__(self, num_games, processes=None, log_every=1000, chunk_size=50):
         self.num_games = num_games
+        self.processes = processes
+        self.log_every = log_every
+        self.chunk_size = chunk_size
 
-        # Stats
         self.agent_wins = 0
         self.player_wins = 0
         self.ties = 0
-        self.chunk_size = chunk_size
-        self.log_every = log_every
-        self.processes = processes
 
-        # Master game just for global Q-table and helpers
-        self.game = UltimateTicTacToeGame()
+        # main game loads q.pkl ONCE
+        self.game = UltimateTicTacToeGame(
+            q_table=None,
+            training=False,
+            multiprocess=False
+        )
+
+    # ------------------------------------------------------------
+    # MULTIPROCESS TRAINING
+    # ------------------------------------------------------------
     def train(self):
+        print(f"Training {self.num_games} games with multiprocessing...")
 
-        print(f"Running {self.num_games} games with multiprocessing...")
-        start_time = time.time()
-
-        # How many chunks do we need?
+        start = time.time()
         num_chunks = (self.num_games + self.chunk_size - 1) // self.chunk_size
 
-        # Prepare (chunk_size, seed) for each chunk
-        # Different seed per chunk to decorrelate
         args_list = []
         base_seed = int(time.time())
         for i in range(num_chunks):
             args_list.append((self.chunk_size, base_seed + i))
 
-        completed_games = 0
+        global GLOBAL_QTABLE
+        GLOBAL_QTABLE = self.game.q_table  # main reference
 
-        with Pool(processes=self.processes) as p:
-            for local_q, a_w, p_w, t_w, end_states, winners in p.imap_unordered(
-                    run_games_chunk,
-                    args_list
-            ):
-                # How many games were in this chunk (last chunk may be partial)
-                chunk_games = len(winners)
-                completed_games += chunk_games
+        completed = 0
 
-                # ----------------- merge stats -----------------
+        with Pool(
+            processes=self.processes,
+            initializer=init_worker,
+            initargs=(self.game.q_table,)
+        ) as p:
+            for local_q, a_w, p_w, t_w in p.imap_unordered(run_games_chunk, args_list):
+
+                games_in_chunk = a_w + p_w + t_w
+                completed += games_in_chunk
+
                 self.agent_wins += a_w
                 self.player_wins += p_w
                 self.ties += t_w
 
-                # ----------------- merge dataset -----------------
-                # end_states are board_ints; turn into 9x9 boards
-
-                # ----------------- merge local Q-table -----------------
+                # ------------------------------------------------
+                # MERGE TD(0)-STYLE:
+                #   global_v <- global_v + ALPHA * (avg_local - global_v)
+                #   counts are just accumulated as metadata.
+                # ------------------------------------------------
                 global_q = self.game.q_table
-                for board_int, (avg_local, count_local) in local_q.items():
-                    if board_int in global_q:
-                        avg_g, count_g = global_q[board_int]
-                        # merge two (avg,count) accumulators
-                        total_count = count_g + count_local
-                        merged_avg = (avg_g * count_g + avg_local * count_local) / total_count
-                        global_q[board_int] = (merged_avg, total_count)
+                for b, (avg_local, count_local) in local_q.items():
+                    if b in global_q:
+                        old_v, old_count = global_q[b]
+                        target = avg_local
+                        new_v = old_v + ALPHA * (target - old_v)
+                        global_q[b] = (new_v, old_count + count_local)
                     else:
-                        global_q[board_int] = (avg_local, count_local)
+                        # first time we see this state globally
+                        global_q[b] = (avg_local, count_local)
 
-                # ----------------- logging -----------------
-                if completed_games >= self.log_every and completed_games % self.log_every < self.chunk_size:
-                    elapsed = time.time() - start_time
-                    speed = completed_games / elapsed if elapsed > 0 else 0.0
-                    print(f"{completed_games}/{self.num_games} games, "
-                          f"speed = {speed:.2f} games/sec")
+                # print speed
+                if completed >= self.log_every and completed % self.log_every < self.chunk_size:
+                    elapsed = time.time() - start
+                    speed = completed / elapsed if elapsed > 0 else 0.0
+                    print(f"{completed}/{self.num_games} games, {speed:.2f} games/sec")
 
-        total_time = time.time() - start_time
-        final_speed = self.num_games / total_time if total_time > 0 else 0.0
+        total_t = time.time() - start
+        print(f"\nFinished in {total_t:.2f}s ({self.num_games / total_t:.2f} games/sec)")
 
-        print(f"\nFinished {self.num_games} games in {total_time:.2f}s "
-              f"({final_speed:.2f} games/sec)\n")
-
+    # ------------------------------------------------------------
+    # SINGLE-PROCESS RUN (evaluation)
+    # ------------------------------------------------------------
     def run(self):
-
-        print(f"Running {self.num_games} games (single process)...")
-        start_time = time.time()
+        print(f"Running {self.num_games} games single-process (evaluation)...")
+        start = time.time()
 
         for i in range(1, self.num_games + 1):
-            boards = self.game.play_one_game()
-            winner = self.game.check_true_win()
+            # evaluation: no exploration
+            self.game.play_one_game(epsilon=0.0, training=False)
+            w = self.game.check_true_win()
 
-            # Stats
-            if winner == 1:
+            if w == 1:
                 self.agent_wins += 1
-            elif winner == -1:
+            elif w == -1:
                 self.player_wins += 1
             else:
                 self.ties += 1
 
-            # Logging
             if i % self.log_every == 0:
-                elapsed = time.time() - start_time
-                speed = i / elapsed if elapsed else 0
-                print(f"{i}/{self.num_games} games, speed = {speed:.2f} games/sec")
+                elapsed = time.time() - start
+                print(f"{i}/{self.num_games} games, {i / elapsed:.2f} games/sec")
 
-        total_time = time.time() - start_time
-        final_speed = self.num_games / total_time if total_time else 0
-
-        print(f"\nFinished {self.num_games} games in {total_time:.2f}s "
-              f"({final_speed:.2f} games/sec)\n")
+        total_t = time.time() - start
+        print(f"Done in {total_t:.2f}s ({self.num_games/total_t:.2f} games/sec)")
 
 
+# =====================================================================
+# MAIN
+# =====================================================================
 if __name__ == "__main__":
     import multiprocessing
+
     cores = multiprocessing.cpu_count()
+
+    # 1) TRAIN
     games = Games(
-        num_games=2_500,
+        num_games=250_000,       # increase this for stronger agent
         processes=cores,
-        log_every=1000,
-        chunk_size=100
+        log_every=100,
+        chunk_size=200
     )
+
     games.run()
-    print("Agent win rate:", (games.agent_wins / games.num_games) * 100)
-    print("Player win rate:", (games.player_wins / games.num_games) * 100)
-    print("Tie rate:", (games.ties / games.num_games) * 100)
-    #hashing.save_qtable("q.pkl", games.game.q_table)
 
+    print("TRAINING DONE")
+    print("Agent win %:", 100 * games.agent_wins / games.num_games)
+    print("Player win %:", 100 * games.player_wins / games.num_games)
+    print("Tie %:", 100 * games.ties / games.num_games)
 
+    # Save resulting Q-table
+    hashing.save_qtable("q.pkl", games.game.q_table)
+
+    #2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
+    eval_games = Games(num_games=5_000, processes=None, log_every=1_000)
+    eval_games.game.q_table = games.game.q_table  # reuse trained table
+    eval_games.run()
+    print("EVAL Agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
