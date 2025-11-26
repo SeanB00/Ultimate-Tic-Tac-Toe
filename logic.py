@@ -1,8 +1,16 @@
+import multiprocessing
+multiprocessing.set_start_method("fork", force=True)
+
 import time
 import numpy as np
 import random
 import hashing
+
 from multiprocessing import Pool
+
+
+
+
 
 # =====================================================================
 # HYPERPARAMETERS
@@ -41,7 +49,7 @@ class UltimateTicTacToeGame:
         self.curr_board = None
 
         # Q-table handling
-        if q_table is None:
+        if q_table is None: 
             self.q_table = hashing.load_qtable("q.pkl")  # MAIN ONLY
         else:
             self.q_table = q_table  # MULTIPROCESS READ-ONLY view
@@ -712,11 +720,11 @@ if __name__ == "__main__":
     games = Games(
         num_games=250_000,       # increase this for stronger agent
         processes=cores,
-        log_every=100,
+        log_every=1000,
         chunk_size=200
     )
 
-    games.run()
+    games.train()
 
     print("TRAINING DONE")
     print("Agent win %:", 100 * games.agent_wins / games.num_games)
