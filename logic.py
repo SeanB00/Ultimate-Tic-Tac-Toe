@@ -5,9 +5,6 @@ import numpy as np
 import hashing
 from multiprocessing import Pool
 
-multiprocessing.set_start_method("fork", force=True)
-
-
 # =====================================================================
 # HYPERPARAMETERS
 # =====================================================================
@@ -23,7 +20,7 @@ GLOBAL_QTABLE = None
 def init_worker(qtable):
     """
     Called ONCE per worker process. Sets a read-only reference
-    to the shared Q-table (for action selection only).
+    to the Q-table (snapshot at the time of Pool creation).
     """
     global GLOBAL_QTABLE
     GLOBAL_QTABLE = qtable
@@ -51,9 +48,10 @@ class UltimateTicTacToeGame:
         self.player_symbol = -1
         self.agent_symbol = 1
 
+        # Counters
+        self.num_plays = 0       # total agent moves
+        self.random_plays = 0    # times we FALL BACK to random (no Q info / forced random)
 
-        self.num_plays = 0
-        self.random_plays = 0
         # State tracking
         self.empty_places = self.get_empty_places()
         self.empty_sub_places = self.get_empty_sub_places()
@@ -94,8 +92,7 @@ class UltimateTicTacToeGame:
 
     def get_empty_sub_places(self):
         """
-    
-    Returns set of (bi, bj) indices of subboards that are still playable.
+        Returns set of (bi, bj) indices of subboards that are still playable.
         """
         return {(i, j) for i in range(3) for j in range(3)}
 
@@ -179,6 +176,7 @@ class UltimateTicTacToeGame:
         d2 = np.trace(np.fliplr(board))
         if d2 == 3:
             return 1
+            # noqa
         if d2 == -3:
             return -1
 
@@ -266,8 +264,12 @@ class UltimateTicTacToeGame:
     def agent_train_move(self, epsilon=1.0):
         """
         Epsilon-greedy agent move during training.
+        Exploration moves (epsilon branch) do NOT count as
+        'fallback randomness' – random_plays is strictly for cases
+        where Q-table couldn't guide us.
         """
         if random.random() < epsilon:
+            # Pure exploration: random move, not counted as missing-Q fallback
             self.agent_random_move()
         else:
             self.agent_smart_move()
@@ -313,20 +315,19 @@ class UltimateTicTacToeGame:
                         if (r, c) not in forbidden and (r, c) in self.empty_sub_places:
                             safe_moves.append((bi, bj, r, c))
                     if safe_moves:
+                        # Use Q-best among safe moves; fallback handled inside _select_best_move
                         best = self._select_best_move(safe_moves)
-                        if best is None:
-                            best = random.choice(safe_moves)
                         return self.apply_agent_move(*best)
 
-                    # No safe move → random legal move in current subboard
+                    # No safe move → forced random legal move in current subboard
                     bi, bj = self.curr_board
                     r, c = random.choice(tuple(self.empty_places[bi][bj]))
+                    # This is a REAL fallback random (no Q-guided safe option)
+                    self.random_plays += 1
                     return self.apply_agent_move(bi, bj, r, c)
 
+                # We have blocking moves, choose Q-best among them
                 best = self._select_best_move(moves)
-                if best is None:
-                    best = random.choice(moves)
-                    self.random_plays+=1
                 return self.apply_agent_move(*best)
 
         # 3) Otherwise choose best move normally using Q-table
@@ -351,6 +352,8 @@ class UltimateTicTacToeGame:
     def agent_random_move(self):
         """
         Agent plays a random legal move.
+        Used ONLY for epsilon exploration; does NOT increment random_plays,
+        because random_plays is reserved for missing-Q fallbacks.
         """
         if self.curr_board is None:
             bi, bj = random.choice(tuple(self.empty_sub_places))
@@ -403,7 +406,7 @@ class UltimateTicTacToeGame:
                a board (bi, bj) such that IF we win that board,
                the entire META GAME is won.
         3) Q-best among all moves.
-        4) Random fallback.
+        4) Random fallback (increments random_plays).
         """
 
         # ----------------------------------------------------
@@ -414,15 +417,17 @@ class UltimateTicTacToeGame:
         for bi in range(3):
             for bj in range(3):
 
-                # ✔ Only consider still-playable boards
+                # only consider still-playable boards
                 if (bi, bj) in self.empty_sub_places:
 
                     # simulate: what if WE win this board?
                     self.sub_boards[bi][bj] = self.agent_symbol
 
-                    # ✔ if winning this board wins the META game
+                    # if winning this board wins the META game
                     if self._wins_meta(self.sub_boards, bi, bj, self.agent_symbol):
                         critical_winning_boards.add((bi, bj))
+
+                    # revert
                     self.sub_boards[bi][bj] = 0
 
         # ----------------------------------------------------
@@ -434,19 +439,13 @@ class UltimateTicTacToeGame:
             if self._wins_sub(sub, self.agent_symbol, r, c):
                 winning_moves.append((bi, bj, r, c))
 
-        # ----------------------------------------------------
-        # Helper: Q-best among a list of moves
-        # ----------------------------------------------------
-
-
-        # ----------------------------------------------------
         # 1️⃣ PRIORITY: Subboard-winning moves
-        # ----------------------------------------------------
         if winning_moves:
             best = self.q_best(winning_moves)
             if best is not None:
                 return best
-            self.random_plays+=1
+            # No Q-values among winning moves → fallback random among them
+            self.random_plays += 1
             return random.choice(winning_moves)
 
         # ----------------------------------------------------
@@ -462,7 +461,8 @@ class UltimateTicTacToeGame:
             best = self.q_best(critical_moves)
             if best is not None:
                 return best
-            self.random_plays+=1
+            # No Q-values among critical moves → fallback random among them
+            self.random_plays += 1
             return random.choice(critical_moves)
 
         # ----------------------------------------------------
@@ -473,23 +473,28 @@ class UltimateTicTacToeGame:
             return best
 
         # ----------------------------------------------------
-        # 4️⃣ Final fallback
+        # 4️⃣ Final fallback: completely random move (no Q-info)
         # ----------------------------------------------------
-
-        self.random_plays+=1
+        self.random_plays += 1
         return random.choice(moves)
 
     # ------------------------------------------------------------
     # Threat detection for meta and subboards
     # ------------------------------------------------------------
-
     def q_best(self, move_list):
+        """
+        Among the given moves, pick the one whose resulting board
+        has the highest Q-value. Returns None if no successor state
+        is found in Q-table.
+        """
         best = None
         best_score = -99999999.0
 
         for bi, bj, r, c in move_list:
+            # Temporarily place move
             self.place_in_rep(bi, bj, r, c, self.agent_symbol)
             b_int = self.get_board_int()
+            # Revert
             self.place_in_rep(bi, bj, r, c, 0)
 
             if b_int in self.q_table:
@@ -499,8 +504,6 @@ class UltimateTicTacToeGame:
                     best_score = val
 
         return best
-
-
 
     def find_meta_block(self):
         """
@@ -721,7 +724,7 @@ class UltimateTicTacToeGame:
                 break
 
             # Agent move
-            self.num_plays+=1
+            self.num_plays += 1
             if training:
                 self.agent_train_move(epsilon)
             else:
@@ -775,6 +778,9 @@ def run_games_chunk(args):
         agent_w: number of agent wins
         player_w: number of opponent wins
         ties: number of ties
+        random_plays: number of fallback random moves (missing Q)
+        num_plays: total agent moves
+        epsilon_used: epsilon for this chunk
     """
     num_games, seed, epsilon = args
 
@@ -790,7 +796,7 @@ def run_games_chunk(args):
     local_q = {}
     agent_w = player_w = ties = 0
 
-    for i in range(num_games):
+    for _ in range(num_games):
 
         game.play_one_game(epsilon=epsilon, training=True)
         w = game.check_true_win()
@@ -813,7 +819,16 @@ def run_games_chunk(args):
 
         game.board_score_list.clear()
 
-    return local_q, agent_w, player_w, ties, game.random_plays, game.num_plays, epsilon
+    return (
+        local_q,
+        agent_w,
+        player_w,
+        ties,
+        game.random_plays,
+        game.num_plays,
+        epsilon,
+    )
+
 
 # =====================================================================
 # TRAINING MANAGER
@@ -825,15 +840,15 @@ class Games:
 
     def __init__(self, num_games, processes=None, log_every=1000, chunk_size=50):
         self.num_games = num_games
-        self.processes = processes
+        self.processes = processes or multiprocessing.cpu_count()
         self.log_every = log_every
         self.chunk_size = chunk_size
 
         self.agent_wins = 0
         self.player_wins = 0
         self.ties = 0
-        self.random_plays = 0
-        # Main game loads q.pkl ONCE and stores the shared Q-table
+
+        # Main game loads q.pkl ONCE and keeps it as a normal dict
         self.game = UltimateTicTacToeGame(
             q_table=None,
             training=False,
@@ -841,13 +856,16 @@ class Games:
         )
 
     # ------------------------------------------------------------
-    # MULTIPROCESS TRAINING
+    # MULTIPROCESS TRAINING (EPOCH-BASED)
     # ------------------------------------------------------------
     def train(self):
         """
-        Train the Q-table using multiprocessing. Uses chunks of games
-        and merges each worker's local averages into the global Q-table
-        via weighted averaging (by count).
+        Train the Q-table using multiprocessing.
+
+        We train in epochs:
+        - Each epoch creates a Pool, forking from the UPDATED Q-table.
+        - Workers see the latest Q-table at the start of each epoch.
+        - Within an epoch, workers use a snapshot (that's fine).
         """
         print(f"Training {self.num_games} games with multiprocessing...")
 
@@ -859,66 +877,88 @@ class Games:
         completed = 0
 
         for i in range(num_chunks):
-            # Linear epsilon schedule in this chunk: EPS_START -> EPS_END
+            # Linear epsilon schedule across chunks: EPS_START -> EPS_END
             frac = i / (num_chunks - 1) if num_chunks > 1 else 1.0
             epsilon = EPS_START + frac * (EPS_END - EPS_START)
-
             args_list.append((self.chunk_size, base_seed + i, epsilon))
 
-        # Expose main Q-table to workers (read-only reference)
-        global GLOBAL_QTABLE
-        GLOBAL_QTABLE = self.game.q_table
         num_random = 0
         num_plays = 0
 
-        with Pool(
-            processes=self.processes,
-            initializer=init_worker,
-            initargs=(self.game.q_table,)
-        ) as p:
-            for local_q, a_w, p_w, t_w, r_p, n_p, eps in p.imap_unordered(run_games_chunk, args_list):
+        # Number of chunks to process per epoch
+        chunks_per_epoch = self.processes
 
-                games_in_chunk = a_w + p_w + t_w
-                completed += games_in_chunk
+        for epoch_start in range(0, num_chunks, chunks_per_epoch):
+            epoch_end = min(epoch_start + chunks_per_epoch, num_chunks)
+            epoch_args = args_list[epoch_start:epoch_end]
 
-                self.agent_wins += a_w
-                self.player_wins += p_w
-                self.ties += t_w
+            # Snapshot Q-table for this epoch (workers see this at fork)
+            global GLOBAL_QTABLE
+            GLOBAL_QTABLE = self.game.q_table
 
-                # Merge Q-tables via weighted average of averages:
-                # combined = (old_v * old_count + avg_local * count_local)
-                #            / (old_count + count_local)
+            with Pool(
+                processes=self.processes,
+                initializer=init_worker,
+                initargs=(GLOBAL_QTABLE,)
+            ) as p:
+                for (
+                    local_q,
+                    a_w,
+                    p_w,
+                    t_w,
+                    r_p,
+                    n_p,
+                    eps
+                ) in p.imap_unordered(run_games_chunk, epoch_args):
 
-                num_random += r_p
-                num_plays += n_p
-                global_q = self.game.q_table
-                for b, (avg_local, count_local) in local_q.items():
-                    if b in global_q:
-                        old_v, old_count = global_q[b]
-                        combined = (
-                            old_v * old_count + avg_local * count_local
-                        ) / (old_count + count_local)
-                        global_q[b] = (combined, old_count + count_local)
-                    else:
-                        # First time we see this state globally
-                        global_q[b] = (avg_local, count_local)
+                    games_in_chunk = a_w + p_w + t_w
+                    completed += games_in_chunk
 
+                    self.agent_wins += a_w
+                    self.player_wins += p_w
+                    self.ties += t_w
 
+                    num_random += r_p
+                    num_plays += n_p
 
-                # Logging: approximate every log_every games
-                if (
-                    completed >= self.log_every
-                    and completed % self.log_every < self.chunk_size
-                ):
-                    elapsed = time.time() - start
-                    speed = completed / elapsed if elapsed > 0 else 0.0
-                    print(f"{completed}/{self.num_games} games, {speed:.2f} games/sec")
-                    print(f"Current randomness:{100*num_random/num_plays}")
-                    print(f"Current Epsilon {eps}")
+                    global_q = self.game.q_table  # normal dict
+
+                    # Merge Q-tables via weighted average of averages:
+                    # combined = (old_v * old_count + avg_local * count_local)
+                    #            / (old_count + count_local)
+                    for b, (avg_local, count_local) in local_q.items():
+                        if b in global_q:
+                            old_v, old_count = global_q[b]
+                            combined = (
+                                old_v * old_count + avg_local * count_local
+                            ) / (old_count + count_local)
+                            global_q[b] = (combined, old_count + count_local)
+                        else:
+                            # First time we see this state globally
+                            global_q[b] = (avg_local, count_local)
+
+                    # Logging: approximate every log_every games
+                    if (
+                        completed >= self.log_every
+                        and completed % self.log_every < self.chunk_size
+                    ):
+                        elapsed = time.time() - start
+                        speed = completed / elapsed if elapsed > 0 else 0.0
+                        randomness_pct = (
+                            100.0 * num_random / num_plays if num_plays > 0 else 0.0
+                        )
+                        print(f"{completed}/{self.num_games} games, {speed:.2f} games/sec")
+                        print(f"Current randomness (fallback %): {randomness_pct:.2f}%")
+                        print(f"Current Epsilon (last chunk): {eps:.4f}")
 
         total_t = time.time() - start
         speed = self.num_games / total_t if total_t > 0 else 0.0
+        final_randomness = (
+            100.0 * num_random / num_plays if num_plays > 0 else 0.0
+        )
         print(f"\nFinished training in {total_t:.2f}s ({speed:.2f} games/sec)")
+        print(f"Overall fallback randomness: {final_randomness:.2f}%")
+        print(f"Total agent moves: {num_plays}, fallback random moves: {num_random}")
 
     # ------------------------------------------------------------
     # SINGLE-PROCESS RUN (evaluation)
@@ -959,22 +999,22 @@ class Games:
 if __name__ == "__main__":
     cores = multiprocessing.cpu_count()
 
-#     # # 1) TRAIN
+    # 1) TRAIN
     games = Games(
         num_games=250_000,     # increase this for stronger agent
         processes=cores,
         log_every=10_000,
         chunk_size=100
     )
-    
+
     games.train()
-    
+
     print("TRAINING DONE")
     print("Agent win %:", 100 * games.agent_wins / games.num_games)
     print("Player win %:", 100 * games.player_wins / games.num_games)
     print("Tie %:", 100 * games.ties / games.num_games)
-    
-    #Save resulting Q-table
+
+    # Save resulting Q-table (already a normal dict)
     hashing.save_qtable("q.pkl", games.game.q_table)
 
     # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
@@ -985,4 +1025,8 @@ if __name__ == "__main__":
     print("EVAL Agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
     print("EVAL Player win %:", 100 * eval_games.player_wins / eval_games.num_games)
     print("EVAL Tie %:", 100 * eval_games.ties / eval_games.num_games)
-    print("Random %:", 100 * eval_games.game.random_plays / eval_games.game.num_plays)
+    print(
+        "Random % (fallback during eval):",
+        100 * eval_games.game.random_plays / eval_games.game.num_plays
+        if eval_games.game.num_plays > 0 else 0.0
+    )
