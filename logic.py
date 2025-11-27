@@ -273,6 +273,7 @@ class UltimateTicTacToeGame:
             self.agent_random_move()
         else:
             self.agent_smart_move()
+            self.num_plays += 1
 
     def agent_smart_move(self):
         """
@@ -724,12 +725,12 @@ class UltimateTicTacToeGame:
                 break
 
             # Agent move
-            self.num_plays += 1
+
             if training:
                 self.agent_train_move(epsilon)
             else:
                 self.agent_smart_move()
-
+                self.num_plays += 1
             states.append(self.get_board_int())
 
             if self.check_true_win() != 0 or self.check_true_tie():
