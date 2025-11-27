@@ -1,13 +1,16 @@
 import time
-import numpy as np
 import random
+import multiprocessing
+import numpy as np
 import hashing
 from multiprocessing import Pool
+
+multiprocessing.set_start_method("fork", force=True)
+
 
 # =====================================================================
 # HYPERPARAMETERS
 # =====================================================================
-ALPHA = 0.1          # Learning rate for TD(0) updates
 EPS_START = 1.0      # Starting epsilon (full exploration)
 EPS_END = 0.05       # Final epsilon (mostly exploitation)
 
@@ -18,7 +21,10 @@ GLOBAL_QTABLE = None
 
 
 def init_worker(qtable):
-    """Called ONCE per worker process. Sets read-only global Q-table."""
+    """
+    Called ONCE per worker process. Sets a read-only reference
+    to the shared Q-table (for action selection only).
+    """
     global GLOBAL_QTABLE
     GLOBAL_QTABLE = qtable
 
@@ -27,51 +33,81 @@ def init_worker(qtable):
 # ULTIMATE TIC TAC TOE GAME ENGINE
 # =====================================================================
 class UltimateTicTacToeGame:
+    """
+    Ultimate Tic Tac Toe environment + Q-learning integration.
+
+    - full_board: 3x3 subboards, each 3x3
+    - sub_boards: 3x3 meta board of who won each subboard
+    - board_rep:  9x9 flattened representation for hashing / symmetry
+    """
+
     def __init__(self, q_table=None, training=False, multiprocess=False):
         # Board representations
-        self.board_rep = np.zeros((9, 9), dtype=int)        # global 9x9
-        self.full_board = np.zeros((3, 3, 3, 3), dtype=int) # 3x3 subboards of 3x3
-        self.sub_boards = np.zeros((3, 3), dtype=int)       # meta board
+        self.board_rep = np.zeros((9, 9), dtype=int)         # global 9x9
+        self.full_board = np.zeros((3, 3, 3, 3), dtype=int)  # 3x3 subboards of 3x3
+        self.sub_boards = np.zeros((3, 3), dtype=int)        # meta board
 
+        # Symbols
         self.player_symbol = -1
         self.agent_symbol = 1
 
+
+        self.num_plays = 0
+        self.random_plays = 0
+        # State tracking
         self.empty_places = self.get_empty_places()
         self.empty_sub_places = self.get_empty_sub_places()
         self.curr_board = None
 
         # Q-table handling
+        # MAIN process: load from disk if q_table is None
+        # WORKER processes: q_table is passed in and treated as read-only
         if q_table is None:
-            self.q_table = hashing.load_qtable("q.pkl")  # MAIN ONLY
+            self.q_table = hashing.load_qtable("q.pkl")
         else:
-            self.q_table = q_table  # MULTIPROCESS READ-ONLY view
+            self.q_table = q_table
 
         self.training = training
         self.multiprocess = multiprocess
 
+        # Discount factor
         self.gamma = 0.9
+
+        # (state_int, target_value) accumulated during game
         self.board_score_list = []
+
+        # For printing
         self.players = {0: "-", 1: "X", -1: "O"}
 
     # ------------------------------------------------------------
     # Utility: Empty cell maps
     # ------------------------------------------------------------
     def get_empty_places(self):
+        """
+        Returns 3x3 grid where each cell is a set of empty (r, c)
+        positions inside that subboard.
+        """
         return [
             [{(i, j) for i in range(3) for j in range(3)} for _ in range(3)]
             for _ in range(3)
         ]
 
     def get_empty_sub_places(self):
+        """
+        Returns set of (bi, bj) indices of subboards that are still playable.
+        """
         return {(i, j) for i in range(3) for j in range(3)}
 
     # ------------------------------------------------------------
-    # Basic board helpers (back from your original code)
+    # Basic board helpers
     # ------------------------------------------------------------
     def global_board(self):
         return self.board_rep
 
     def init_game(self):
+        """
+        Reset game state to start a new game.
+        """
         self.full_board = np.zeros((3, 3, 3, 3), dtype=int)
         self.sub_boards = np.zeros((3, 3), dtype=int)
         self.empty_places = self.get_empty_places()
@@ -84,6 +120,9 @@ class UltimateTicTacToeGame:
         return self.check_true_win() == 0 and not self.check_true_tie()
 
     def get_playable_boards(self):
+        """
+        Return the set of playable subboards given the current rules.
+        """
         if self.curr_board is None:
             return set(self.empty_sub_places)
         if self.curr_board in self.empty_sub_places:
@@ -106,9 +145,12 @@ class UltimateTicTacToeGame:
         print("-" * 9)
 
     # ------------------------------------------------------------
-    # Win logic
+    # Win / tie logic
     # ------------------------------------------------------------
     def check_win(self, board):
+        """
+        Check win on a 3x3 board: returns 1, -1 or 0.
+        """
         # rows
         for row in board:
             s = np.sum(row)
@@ -125,13 +167,14 @@ class UltimateTicTacToeGame:
             if s == -3:
                 return -1
 
-        # diagonals
+        # main diagonal
         d1 = np.trace(board)
         if d1 == 3:
             return 1
         if d1 == -3:
             return -1
 
+        # anti-diagonal
         d2 = np.trace(np.fliplr(board))
         if d2 == 3:
             return 1
@@ -141,32 +184,45 @@ class UltimateTicTacToeGame:
         return 0
 
     def tie(self, board, empty):
+        """
+        Returns True if the given 3x3 board is a tie (no win, no moves).
+        """
         return len(empty) == 0 and self.check_win(board) == 0
 
     def sub_board_is_done(self, bi, bj):
+        """
+        Returns True if the subboard (bi, bj) is no longer playable.
+        """
         return len(self.empty_places[bi][bj]) == 0 or self.sub_boards[bi][bj] != 0
 
     # ------------------------------------------------------------
     # Place piece in global representation
     # ------------------------------------------------------------
     def get_global_position(self, bi, bj, r, c):
+        """
+        Map local (bi, bj, r, c) to global (gi, gj) in 9x9 board_rep.
+        """
         return bi * 3 + r, bj * 3 + c
 
     def place_in_rep(self, bi, bj, r, c, symbol):
+        """
+        Place symbol in board_rep at the mapped global index.
+        """
         gi, gj = self.get_global_position(bi, bj, r, c)
         self.board_rep[gi][gj] = symbol
 
     # ------------------------------------------------------------
-    # Q-table update (single process ONLY) - TD(0) with ALPHA
+    # Q-table update (single process ONLY) - AVERAGING POLICY
     # ------------------------------------------------------------
     def update_q_table(self):
         """
-        Apply TD(0)-style updates to the global Q-table using
+        Apply an averaging-based update to the global Q-table using
         the targets in self.board_score_list.
 
         Each entry is (state_int, target_value), and we do:
-        Q <- Q + ALPHA * (target - Q)
-        We still keep count as metadata.
+        new_v = (old_v * count + target) / (count + 1)
+
+        Counts grow monotonically and are used as metadata.
         """
         for board_int, target in self.board_score_list:
             if board_int in self.q_table:
@@ -174,13 +230,16 @@ class UltimateTicTacToeGame:
             else:
                 old_v, count = 0.0, 0
 
-            new_v = old_v + ALPHA * (target - old_v)
+            new_v = (old_v * count + target) / (count + 1)
             self.q_table[board_int] = (new_v, count + 1)
 
     # ------------------------------------------------------------
     # Random opponent move
     # ------------------------------------------------------------
     def player_random_move(self):
+        """
+        Opponent plays a purely random legal move.
+        """
         if self.curr_board is None:
             bi, bj = random.choice(tuple(self.empty_sub_places))
         else:
@@ -204,16 +263,27 @@ class UltimateTicTacToeGame:
     # Agent move selection
     # ------------------------------------------------------------
     def agent_train_move(self, epsilon=1.0):
+        """
+        Epsilon-greedy agent move during training.
+        """
         if random.random() < epsilon:
             self.agent_random_move()
         else:
             self.agent_smart_move()
 
     def agent_smart_move(self):
+        """
+        Deterministic agent move (no exploration) using:
+        1) Immediate meta winning moves
+        2) Blocking opponent meta threats
+        3) Q-table based selection on canonical board states
+        """
+        # 1) Try to win the meta game if possible
         win = self.find_winning_move()
         if win is not None:
             return self.apply_agent_move(*win)
 
+        # 2) Look for meta threats and immediate dangers in those subboards
         threats = self.find_meta_block()
         if threats:
             immediate = {}
@@ -223,7 +293,7 @@ class UltimateTicTacToeGame:
                     immediate[t] = imm
 
             if immediate:
-                # block move if possible
+                # If multiple boards are threatened, try blocking in them
                 if self.curr_board is None:
                     moves = [
                         (bi, bj, r, c)
@@ -234,7 +304,7 @@ class UltimateTicTacToeGame:
                     bi, bj = self.curr_board
                     moves = [(bi, bj, r, c) for (r, c) in immediate[(bi, bj)]]
                 else:
-                    # try to avoid sending opponent into threat boards
+                    # Try to avoid sending the opponent into threatened boards
                     safe_moves = []
                     bi, bj = self.curr_board
                     forbidden = set(immediate.keys())
@@ -246,7 +316,8 @@ class UltimateTicTacToeGame:
                         if best is None:
                             best = random.choice(safe_moves)
                         return self.apply_agent_move(*best)
-                    # no safe move → random legal move
+
+                    # No safe move → random legal move in current subboard
                     bi, bj = self.curr_board
                     r, c = random.choice(tuple(self.empty_places[bi][bj]))
                     return self.apply_agent_move(bi, bj, r, c)
@@ -254,9 +325,10 @@ class UltimateTicTacToeGame:
                 best = self._select_best_move(moves)
                 if best is None:
                     best = random.choice(moves)
+                    self.random_plays+=1
                 return self.apply_agent_move(*best)
 
-        # otherwise choose best move normally
+        # 3) Otherwise choose best move normally using Q-table
         if self.curr_board is None:
             playable = tuple(self.empty_sub_places)
         else:
@@ -273,15 +345,17 @@ class UltimateTicTacToeGame:
         ]
 
         best = self._select_best_move(all_moves)
-        if best is None:
-            best = random.choice(all_moves)
         return self.apply_agent_move(*best)
 
     def agent_random_move(self):
+        """
+        Agent plays a random legal move.
+        """
         if self.curr_board is None:
             bi, bj = random.choice(tuple(self.empty_sub_places))
         else:
             bi, bj = self.curr_board
+
         r, c = random.choice(tuple(self.empty_places[bi][bj]))
 
         self.full_board[bi][bj][r][c] = self.agent_symbol
@@ -300,6 +374,9 @@ class UltimateTicTacToeGame:
     # Apply move
     # ------------------------------------------------------------
     def apply_agent_move(self, bi, bj, r, c):
+        """
+        Applies the agent's move and updates state.
+        """
         self.full_board[bi][bj][r][c] = self.agent_symbol
         self.place_in_rep(bi, bj, r, c, self.agent_symbol)
         self.empty_places[bi][bj].remove((r, c))
@@ -316,26 +393,120 @@ class UltimateTicTacToeGame:
     # Q-score selection helper
     # ------------------------------------------------------------
     def _select_best_move(self, moves):
-        best = None
-        best_score = -999
+        """
+        Final move selection policy (after danger/threat logic in agent_smart_move):
 
+        PRIORITY:
+        1) Q-best among moves that WIN THEIR SUBBOARD immediately.
+        2) Q-best among moves inside ANY 'critical meta-winning board':
+               a board (bi, bj) such that IF we win that board,
+               the entire META GAME is won.
+        3) Q-best among all moves.
+        4) Random fallback.
+        """
+
+        # ----------------------------------------------------
+        # Step 0: Identify all CRITICAL META-WIN boards
+        # ----------------------------------------------------
+        critical_winning_boards = set()
+
+        for bi in range(3):
+            for bj in range(3):
+
+                # ✔ Only consider still-playable boards
+                if (bi, bj) in self.empty_sub_places:
+
+                    # simulate: what if WE win this board?
+                    self.sub_boards[bi][bj] = self.agent_symbol
+
+                    # ✔ if winning this board wins the META game
+                    if self._wins_meta(self.sub_boards, bi, bj, self.agent_symbol):
+                        critical_winning_boards.add((bi, bj))
+                    self.sub_boards[bi][bj] = 0
+
+        # ----------------------------------------------------
+        # Step 1: Collect SUBBOARD-WINNING moves
+        # ----------------------------------------------------
+        winning_moves = []
         for bi, bj, r, c in moves:
+            sub = self.full_board[bi][bj]
+            if self._wins_sub(sub, self.agent_symbol, r, c):
+                winning_moves.append((bi, bj, r, c))
+
+        # ----------------------------------------------------
+        # Helper: Q-best among a list of moves
+        # ----------------------------------------------------
+
+
+        # ----------------------------------------------------
+        # 1️⃣ PRIORITY: Subboard-winning moves
+        # ----------------------------------------------------
+        if winning_moves:
+            best = self.q_best(winning_moves)
+            if best is not None:
+                return best
+            self.random_plays+=1
+            return random.choice(winning_moves)
+
+        # ----------------------------------------------------
+        # 2️⃣ PRIORITY: Moves in CRITICAL META-WIN BOARDS
+        # ----------------------------------------------------
+        critical_moves = [
+            (bi, bj, r, c)
+            for (bi, bj, r, c) in moves
+            if (bi, bj) in critical_winning_boards
+        ]
+
+        if critical_moves:
+            best = self.q_best(critical_moves)
+            if best is not None:
+                return best
+            self.random_plays+=1
+            return random.choice(critical_moves)
+
+        # ----------------------------------------------------
+        # 3️⃣ Q-best among all moves
+        # ----------------------------------------------------
+        best = self.q_best(moves)
+        if best is not None:
+            return best
+
+        # ----------------------------------------------------
+        # 4️⃣ Final fallback
+        # ----------------------------------------------------
+
+        self.random_plays+=1
+        return random.choice(moves)
+
+    # ------------------------------------------------------------
+    # Threat detection for meta and subboards
+    # ------------------------------------------------------------
+
+    def q_best(self, move_list):
+        best = None
+        best_score = -99999999.0
+
+        for bi, bj, r, c in move_list:
             self.place_in_rep(bi, bj, r, c, self.agent_symbol)
-            board_int = self.get_board_int()
+            b_int = self.get_board_int()
             self.place_in_rep(bi, bj, r, c, 0)
 
-            if board_int in self.q_table:
-                score, _ = self.q_table[board_int]
-                if score > best_score:
-                    best_score = score
+            if b_int in self.q_table:
+                val, _ = self.q_table[b_int]
+                if val > best_score:
                     best = (bi, bj, r, c)
+                    best_score = val
 
         return best
 
-    # ------------------------------------------------------------
-    # Threat detection
-    # ------------------------------------------------------------
+
+
     def find_meta_block(self):
+        """
+        Find meta-board positions (subboards) where opponent is
+        threatening to win on the meta board (i.e., 2 in a line).
+        Returns a list of (bi, bj) subboard indices.
+        """
         opp = self.player_symbol
         sb = self.sub_boards
         threats = set()
@@ -355,23 +526,27 @@ class UltimateTicTacToeGame:
                     if sb[i][j] == 0 and (i, j) in self.empty_sub_places:
                         threats.add((i, j))
 
-        # diag
+        # main diagonal
         diag = [sb[i][i] for i in range(3)]
         if sum(diag) == 2 * opp:
             for i in range(3):
-                if sb[i][i] == 0:
+                if sb[i][i] == 0 and (i, i) in self.empty_sub_places:
                     threats.add((i, i))
 
-        # anti-diag
+        # anti-diagonal
         adiag = [sb[i][2 - i] for i in range(3)]
         if sum(adiag) == 2 * opp:
             for i in range(3):
-                if sb[i][2 - i] == 0:
+                if sb[i][2 - i] == 0 and (i, 2 - i) in self.empty_sub_places:
                     threats.add((i, 2 - i))
 
         return list(threats)
 
     def find_immidiate_danger(self, bi, bj):
+        """
+        For a given subboard (bi, bj), find cells that block an immediate
+        win (2 in a row) for the opponent. Returns list of (r, c).
+        """
         sb = self.full_board[bi][bj]
         opp = self.player_symbol
         dangers = []
@@ -383,7 +558,7 @@ class UltimateTicTacToeGame:
                     if sb[i][j] == 0:
                         dangers.append((i, j))
 
-        # cols
+        # columns
         for j in range(3):
             col = sb[:, j]
             if np.sum(col) == 2 * opp:
@@ -391,14 +566,14 @@ class UltimateTicTacToeGame:
                     if sb[i][j] == 0:
                         dangers.append((i, j))
 
-        # diag
+        # main diagonal
         diag = [sb[i][i] for i in range(3)]
         if sum(diag) == 2 * opp:
             for i in range(3):
                 if sb[i][i] == 0:
                     dangers.append((i, i))
 
-        # anti diag
+        # anti-diagonal
         adiag = [sb[i][2 - i] for i in range(3)]
         if sum(adiag) == 2 * opp:
             for i in range(3):
@@ -408,9 +583,13 @@ class UltimateTicTacToeGame:
         return dangers
 
     # ------------------------------------------------------------
-    # Winning move finder
+    # Winning move finder (meta win)
     # ------------------------------------------------------------
     def find_winning_move(self):
+        """
+        Search all legal moves; return (bi, bj, r, c) that produce
+        an immediate meta-board win if it exists, else None.
+        """
         if self.curr_board is None:
             boards = self.empty_sub_places
         else:
@@ -432,37 +611,43 @@ class UltimateTicTacToeGame:
 
         return None
 
-    # helper: does move (r,c) win the subboard?
     def _wins_sub(self, sb, player, r, c):
+        """
+        Check if placing 'player' at (r, c) in subboard 'sb'
+        wins that subboard.
+        """
         # row
         if all((sb[r][j] == player or (r, j) == (r, c)) for j in range(3)):
             return True
-        # col
+        # column
         if all((sb[i][c] == player or (i, c) == (r, c)) for i in range(3)):
             return True
-        # diag
+        # main diagonal
         if r == c:
             if all((sb[i][i] == player or (i, i) == (r, c)) for i in range(3)):
                 return True
-        # anti diag
+        # anti-diagonal
         if r + c == 2:
             if all((sb[i][2 - i] == player or (i, 2 - i) == (r, c)) for i in range(3)):
                 return True
         return False
 
-    # helper: meta win
     def _wins_meta(self, sb, bi, bj, player):
+        """
+        Check if subboard (bi, bj) being won by 'player' yields
+        a meta-board win.
+        """
         # row
         if all(sb[bi][j] == player for j in range(3)):
             return True
-        # col
+        # column
         if all(sb[i][bj] == player for i in range(3)):
             return True
-        # diag
+        # main diagonal
         if bi == bj:
             if all(sb[i][i] == player for i in range(3)):
                 return True
-        # anti diag
+        # anti-diagonal
         if bi + bj == 2:
             if all(sb[i][2 - i] == player for i in range(3)):
                 return True
@@ -472,6 +657,9 @@ class UltimateTicTacToeGame:
     # Symmetry hashing
     # ------------------------------------------------------------
     def all_symmetries_fast(self, b):
+        """
+        Return 8 symmetric variants of a 9x9 board (b).
+        """
         bt = b.T
         fh = np.flipud(b)
         fv = np.fliplr(b)
@@ -483,6 +671,9 @@ class UltimateTicTacToeGame:
         return [b, r90, r180, r270, fh, fv, fd, fad]
 
     def canonical_board_int(self, board):
+        """
+        Returns the minimal integer hash among all symmetries of 'board'.
+        """
         best = None
         for sym in self.all_symmetries_fast(board):
             v = hashing.encode_board_to_int(sym.ravel())
@@ -491,9 +682,15 @@ class UltimateTicTacToeGame:
         return best
 
     def get_board_int(self):
+        """
+        Get canonical integer representation of current board_rep.
+        """
         return self.canonical_board_int(self.board_rep)
 
     def get_board_from_int(self, value):
+        """
+        Decode an integer back to a 9x9 numpy board.
+        """
         board = hashing.decode_board_from_int(value)
         return np.array(board).reshape(9, 9)
 
@@ -501,6 +698,17 @@ class UltimateTicTacToeGame:
     # Game loop
     # ------------------------------------------------------------
     def play_one_game(self, epsilon=1.0, training=None):
+        """
+        Plays one game:
+        - Agent plays with epsilon-greedy if training=True,
+          otherwise fully greedy (smart only).
+        - Opponent plays random.
+        - Rewards are based on final game outcome, discounted backwards
+          through the visited states.
+
+        Returns:
+            np.array of visited states (in reversed order of play).
+        """
         if training is None:
             training = self.training
 
@@ -511,6 +719,8 @@ class UltimateTicTacToeGame:
             if self.check_true_win() != 0 or self.check_true_tie():
                 break
 
+            # Agent move
+            self.num_plays+=1
             if training:
                 self.agent_train_move(epsilon)
             else:
@@ -521,23 +731,26 @@ class UltimateTicTacToeGame:
             if self.check_true_win() != 0 or self.check_true_tie():
                 break
 
+            # Opponent random move
             self.player_random_move()
             states.append(self.get_board_int())
 
         winner = self.check_true_win()
-        score = winner
+        score = winner  # 1, 0, or -1
 
+        # Backward discount
         states.reverse()
         for s in states:
             self.board_score_list.append((s, score))
             score *= self.gamma
 
+        # If single-process, update Q-table immediately
         if not self.multiprocess:
             self.update_q_table()
 
         return np.array(states)
 
-    # final win/tie checks
+    # final win/tie checks on meta board
     def check_true_win(self):
         return self.check_win(self.sub_boards)
 
@@ -546,10 +759,23 @@ class UltimateTicTacToeGame:
 
 
 # =====================================================================
-# WORKER: RUNS A CHUNK OF GAMES AND RETURNS Q-DELTA + STATS
+# WORKER: RUNS A CHUNK OF GAMES AND RETURNS LOCAL Q-AVERAGES + STATS
 # =====================================================================
 def run_games_chunk(args):
-    num_games, seed = args
+    """
+    Worker entrypoint for multiprocessing.
+
+    Args:
+        num_games: how many games to simulate in this chunk
+        seed: RNG seed for reproducibility
+
+    Returns:
+        local_q: dict {state_int: (avg_target_over_chunk, count_in_chunk)}
+        agent_w: number of agent wins
+        player_w: number of opponent wins
+        ties: number of ties
+    """
+    num_games, seed, epsilon = args
 
     random.seed(seed)
     np.random.seed(seed)
@@ -564,12 +790,7 @@ def run_games_chunk(args):
     agent_w = player_w = ties = 0
 
     for i in range(num_games):
-        # simple per-chunk epsilon schedule: EPS_START -> EPS_END
-        if num_games > 1:
-            frac = i / (num_games - 1)
-        else:
-            frac = 1.0
-        epsilon = EPS_START + frac * (EPS_END - EPS_START)
+
         game.play_one_game(epsilon=epsilon, training=True)
         w = game.check_true_win()
 
@@ -580,7 +801,7 @@ def run_games_chunk(args):
         else:
             ties += 1
 
-        # aggregate targets for each state in this chunk
+        # Aggregate targets for each state in this chunk (averaging)
         for b, target in game.board_score_list:
             if b in local_q:
                 avg, c = local_q[b]
@@ -591,13 +812,16 @@ def run_games_chunk(args):
 
         game.board_score_list.clear()
 
-    return local_q, agent_w, player_w, ties
-
+    return local_q, agent_w, player_w, ties, game.random_plays
 
 # =====================================================================
 # TRAINING MANAGER
 # =====================================================================
 class Games:
+    """
+    Wrapper to manage many games (training or evaluation).
+    """
+
     def __init__(self, num_games, processes=None, log_every=1000, chunk_size=50):
         self.num_games = num_games
         self.processes = processes
@@ -607,8 +831,8 @@ class Games:
         self.agent_wins = 0
         self.player_wins = 0
         self.ties = 0
-
-        # main game loads q.pkl ONCE
+        self.random_plays = 0
+        # Main game loads q.pkl ONCE and stores the shared Q-table
         self.game = UltimateTicTacToeGame(
             q_table=None,
             training=False,
@@ -619,6 +843,11 @@ class Games:
     # MULTIPROCESS TRAINING
     # ------------------------------------------------------------
     def train(self):
+        """
+        Train the Q-table using multiprocessing. Uses chunks of games
+        and merges each worker's local averages into the global Q-table
+        via weighted averaging (by count).
+        """
         print(f"Training {self.num_games} games with multiprocessing...")
 
         start = time.time()
@@ -626,20 +855,27 @@ class Games:
 
         args_list = []
         base_seed = int(time.time())
-        for i in range(num_chunks):
-            args_list.append((self.chunk_size, base_seed + i))
-
-        global GLOBAL_QTABLE
-        GLOBAL_QTABLE = self.game.q_table  # main reference
-
         completed = 0
+
+        for i in range(num_chunks):
+            # Linear epsilon schedule in this chunk: EPS_START -> EPS_END
+            frac = i / (num_chunks - 1) if num_chunks > 1 else 1.0
+            epsilon = EPS_START + frac * (EPS_END - EPS_START)
+
+            args_list.append((self.chunk_size, base_seed + i, epsilon))
+
+        # Expose main Q-table to workers (read-only reference)
+        global GLOBAL_QTABLE
+        GLOBAL_QTABLE = self.game.q_table
+        num_random = 0
+
 
         with Pool(
             processes=self.processes,
             initializer=init_worker,
             initargs=(self.game.q_table,)
         ) as p:
-            for local_q, a_w, p_w, t_w in p.imap_unordered(run_games_chunk, args_list):
+            for local_q, a_w, p_w, t_w, r_p in p.imap_unordered(run_games_chunk, args_list):
 
                 games_in_chunk = a_w + p_w + t_w
                 completed += games_in_chunk
@@ -648,35 +884,47 @@ class Games:
                 self.player_wins += p_w
                 self.ties += t_w
 
-                # ------------------------------------------------
-                # MERGE TD(0)-STYLE:
-                #   global_v <- global_v + ALPHA * (avg_local - global_v)
-                #   counts are just accumulated as metadata.
-                # ------------------------------------------------
+                # Merge Q-tables via weighted average of averages:
+                # combined = (old_v * old_count + avg_local * count_local)
+                #            / (old_count + count_local)
+
+                num_random += r_p
                 global_q = self.game.q_table
                 for b, (avg_local, count_local) in local_q.items():
                     if b in global_q:
                         old_v, old_count = global_q[b]
-                        target = avg_local
-                        new_v = old_v + ALPHA * (target - old_v)
-                        global_q[b] = (new_v, old_count + count_local)
+                        combined = (
+                            old_v * old_count + avg_local * count_local
+                        ) / (old_count + count_local)
+                        global_q[b] = (combined, old_count + count_local)
                     else:
-                        # first time we see this state globally
+                        # First time we see this state globally
                         global_q[b] = (avg_local, count_local)
 
-                # print speed
-                if completed >= self.log_every and completed % self.log_every < self.chunk_size:
+
+
+                # Logging: approximate every log_every games
+                if (
+                    completed >= self.log_every
+                    and completed % self.log_every < self.chunk_size
+                ):
                     elapsed = time.time() - start
                     speed = completed / elapsed if elapsed > 0 else 0.0
                     print(f"{completed}/{self.num_games} games, {speed:.2f} games/sec")
+                    print(f"Current randomness: {num_random/completed}")
 
         total_t = time.time() - start
-        print(f"\nFinished in {total_t:.2f}s ({self.num_games / total_t:.2f} games/sec)")
+        speed = self.num_games / total_t if total_t > 0 else 0.0
+        print(f"\nFinished training in {total_t:.2f}s ({speed:.2f} games/sec)")
 
     # ------------------------------------------------------------
     # SINGLE-PROCESS RUN (evaluation)
     # ------------------------------------------------------------
     def run(self):
+        """
+        Run games without exploration (epsilon=0) for evaluation,
+        using current Q-table.
+        """
         print(f"Running {self.num_games} games single-process (evaluation)...")
         start = time.time()
 
@@ -694,40 +942,43 @@ class Games:
 
             if i % self.log_every == 0:
                 elapsed = time.time() - start
-                print(f"{i}/{self.num_games} games, {i / elapsed:.2f} games/sec")
+                speed = i / elapsed if elapsed > 0 else 0.0
+                print(f"{i}/{self.num_games} games, {speed:.2f} games/sec")
 
         total_t = time.time() - start
-        print(f"Done in {total_t:.2f}s ({self.num_games/total_t:.2f} games/sec)")
+        speed = self.num_games / total_t if total_t > 0 else 0.0
+        print(f"Done evaluation in {total_t:.2f}s ({speed:.2f} games/sec)")
 
 
 # =====================================================================
 # MAIN
 # =====================================================================
 if __name__ == "__main__":
-    import multiprocessing
+#     cores = multiprocessing.cpu_count()
+#
+#     # # 1) TRAIN
+#     games = Games(
+#         num_games=250_000,     # increase this for stronger agent
+#         processes=cores,
+#         log_every=10_000,
+#         chunk_size=200
+#     )
+    #
+    # games.train()
+    #
+    # print("TRAINING DONE")
+    # print("Agent win %:", 100 * games.agent_wins / games.num_games)
+    # print("Player win %:", 100 * games.player_wins / games.num_games)
+    # print("Tie %:", 100 * games.ties / games.num_games)
+    #
+    # # Save resulting Q-table
+    # hashing.save_qtable("q.pkl", games.game.q_table)
 
-    cores = multiprocessing.cpu_count()
-
-    # 1) TRAIN
-    games = Games(
-        num_games=250_000,       # increase this for stronger agent
-        processes=cores,
-        log_every=100,
-        chunk_size=200
-    )
-
-    games.run()
-
-    print("TRAINING DONE")
-    print("Agent win %:", 100 * games.agent_wins / games.num_games)
-    print("Player win %:", 100 * games.player_wins / games.num_games)
-    print("Tie %:", 100 * games.ties / games.num_games)
-
-    # Save resulting Q-table
-    hashing.save_qtable("q.pkl", games.game.q_table)
-
-    #2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
-    eval_games = Games(num_games=5_000, processes=None, log_every=1_000)
-    eval_games.game.q_table = games.game.q_table  # reuse trained table
+    # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
+    eval_games = Games(num_games=1_000, processes=None, log_every=1_000)
     eval_games.run()
+
     print("EVAL Agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
+    print("EVAL Player win %:", 100 * eval_games.player_wins / eval_games.num_games)
+    print("EVAL Tie %:", 100 * eval_games.ties / eval_games.num_games)
+    print("Random %:", 100 * eval_games.game.random_plays / eval_games.game.num_plays)
