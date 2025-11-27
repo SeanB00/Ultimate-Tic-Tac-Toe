@@ -94,7 +94,8 @@ class UltimateTicTacToeGame:
 
     def get_empty_sub_places(self):
         """
-        Returns set of (bi, bj) indices of subboards that are still playable.
+    
+    Returns set of (bi, bj) indices of subboards that are still playable.
         """
         return {(i, j) for i in range(3) for j in range(3)}
 
@@ -812,7 +813,7 @@ def run_games_chunk(args):
 
         game.board_score_list.clear()
 
-    return local_q, agent_w, player_w, ties, game.random_plays
+    return local_q, agent_w, player_w, ties, game.random_plays, game.num_plays, epsilon
 
 # =====================================================================
 # TRAINING MANAGER
@@ -868,14 +869,14 @@ class Games:
         global GLOBAL_QTABLE
         GLOBAL_QTABLE = self.game.q_table
         num_random = 0
-
+        num_plays = 0
 
         with Pool(
             processes=self.processes,
             initializer=init_worker,
             initargs=(self.game.q_table,)
         ) as p:
-            for local_q, a_w, p_w, t_w, r_p in p.imap_unordered(run_games_chunk, args_list):
+            for local_q, a_w, p_w, t_w, r_p, n_p, eps in p.imap_unordered(run_games_chunk, args_list):
 
                 games_in_chunk = a_w + p_w + t_w
                 completed += games_in_chunk
@@ -889,6 +890,7 @@ class Games:
                 #            / (old_count + count_local)
 
                 num_random += r_p
+                num_plays += n_p
                 global_q = self.game.q_table
                 for b, (avg_local, count_local) in local_q.items():
                     if b in global_q:
@@ -911,7 +913,8 @@ class Games:
                     elapsed = time.time() - start
                     speed = completed / elapsed if elapsed > 0 else 0.0
                     print(f"{completed}/{self.num_games} games, {speed:.2f} games/sec")
-                    print(f"Current randomness: {num_random/completed}")
+                    print(f"Current randomness:{100*num_random/num_plays}")
+                    print(f"Current Epsilon {eps}")
 
         total_t = time.time() - start
         speed = self.num_games / total_t if total_t > 0 else 0.0
@@ -954,27 +957,28 @@ class Games:
 # MAIN
 # =====================================================================
 if __name__ == "__main__":
-#     cores = multiprocessing.cpu_count()
-#
+    cores = multiprocessing.cpu_count()
+
 #     # # 1) TRAIN
-#     games = Games(
-#         num_games=250_000,     # increase this for stronger agent
-#         processes=cores,
-#         log_every=10_000,
-#         chunk_size=200
-#     )
-    #
-    # games.train()
-    #
-    # print("TRAINING DONE")
-    # print("Agent win %:", 100 * games.agent_wins / games.num_games)
-    # print("Player win %:", 100 * games.player_wins / games.num_games)
-    # print("Tie %:", 100 * games.ties / games.num_games)
-    #
-    # # Save resulting Q-table
-    # hashing.save_qtable("q.pkl", games.game.q_table)
+    games = Games(
+        num_games=250_000,     # increase this for stronger agent
+        processes=cores,
+        log_every=10_000,
+        chunk_size=100
+    )
+    
+    games.train()
+    
+    print("TRAINING DONE")
+    print("Agent win %:", 100 * games.agent_wins / games.num_games)
+    print("Player win %:", 100 * games.player_wins / games.num_games)
+    print("Tie %:", 100 * games.ties / games.num_games)
+    
+    #Save resulting Q-table
+    hashing.save_qtable("q.pkl", games.game.q_table)
 
     # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
+    print("Linux training")
     eval_games = Games(num_games=1_000, processes=None, log_every=1_000)
     eval_games.run()
 
