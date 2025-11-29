@@ -4,6 +4,7 @@ import multiprocessing
 import numpy as np
 import hashing
 from multiprocessing import Pool
+from lmdb_qtable import LMDBQTable
 
 # =====================================================================
 # HYPERPARAMETERS
@@ -61,7 +62,7 @@ class UltimateTicTacToeGame:
         # MAIN process: load from disk if q_table is None
         # WORKER processes: q_table is passed in and treated as read-only
         if q_table is None:
-            self.q_table = hashing.load_qtable("q.pkl")
+            self.q_table = LMDBQTable("qtable.lmdb")
         else:
             self.q_table = q_table
 
@@ -214,23 +215,19 @@ class UltimateTicTacToeGame:
     # Q-table update (single process ONLY) - AVERAGING POLICY
     # ------------------------------------------------------------
     def update_q_table(self):
-        """
-        Apply an averaging-based update to the global Q-table using
-        the targets in self.board_score_list.
+        # LMDB backend
+        if hasattr(self.q_table, "update_from_targets"):
+            self.q_table.update_from_targets(self.board_score_list)
+        else:
+            # fallback to dict
+            for board_int, target in self.board_score_list:
+                if board_int in self.q_table:
+                    old_v, count = self.q_table[board_int]
+                else:
+                    old_v, count = 0.0, 0
 
-        Each entry is (state_int, target_value), and we do:
-        new_v = (old_v * count + target) / (count + 1)
-
-        Counts grow monotonically and are used as metadata.
-        """
-        for board_int, target in self.board_score_list:
-            if board_int in self.q_table:
-                old_v, count = self.q_table[board_int]
-            else:
-                old_v, count = 0.0, 0
-
-            new_v = (old_v * count + target) / (count + 1)
-            self.q_table[board_int] = (new_v, count + 1)
+                new_v = (old_v * count + target) / (count + 1)
+                self.q_table[board_int] = (new_v, count + 1)
 
     # ------------------------------------------------------------
     # Random opponent move
@@ -750,7 +747,7 @@ class UltimateTicTacToeGame:
             score *= self.gamma
 
         # If single-process, update Q-table immediately
-        if not self.multiprocess:
+        if not self.multiprocess and training:
             self.update_q_table()
 
         return np.array(states)
@@ -922,21 +919,21 @@ class Games:
                     num_random += r_p
                     num_plays += n_p
 
-                    global_q = self.game.q_table  # normal dict
 
                     # Merge Q-tables via weighted average of averages:
                     # combined = (old_v * old_count + avg_local * count_local)
                     #            / (old_count + count_local)
-                    for b, (avg_local, count_local) in local_q.items():
-                        if b in global_q:
-                            old_v, old_count = global_q[b]
-                            combined = (
-                                old_v * old_count + avg_local * count_local
-                            ) / (old_count + count_local)
-                            global_q[b] = (combined, old_count + count_local)
-                        else:
-                            # First time we see this state globally
-                            global_q[b] = (avg_local, count_local)
+                    if hasattr(self.game.q_table, "batch_merge_local_q"):
+                        self.game.q_table.batch_merge_local_q(local_q)
+                    else:
+                        # fallback dict merge
+                        for b, (avg_local, count_local) in local_q.items():
+                            if b in self.game.q_table:
+                                old_v, old_count = self.game.q_table[b]
+                                combined = (old_v * old_count + avg_local * count_local) / (old_count + count_local)
+                                self.game.q_table[b] = (combined, old_count + count_local)
+                            else:
+                                self.game.q_table[b] = (avg_local, count_local)
 
                     # Logging: approximate every log_every games
                     if (
@@ -1016,7 +1013,7 @@ if __name__ == "__main__":
     print("Tie %:", 100 * games.ties / games.num_games)
 
     # Save resulting Q-table (already a normal dict)
-    hashing.save_qtable("q.pkl", games.game.q_table)
+    # hashing.save_qtable("q.pkl", games.game.q_table)
 
     # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
     print("Linux training")
