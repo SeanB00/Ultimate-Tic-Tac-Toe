@@ -2,7 +2,7 @@
 import lmdb
 import struct
 
-KEY_BYTES = 16  # 128-bit keys
+KEY_BYTES = 32
 
 
 class LMDBQTable:
