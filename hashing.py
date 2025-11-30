@@ -42,6 +42,8 @@ def save_qtable(path, qtable):
     with open(path, "wb") as f:
         pickle.dump(qtable, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+    print(f"Saved Q-table with {len(qtable)} entries.")
+
 
 # -----------------------------------------
 # Q-TABLE LOAD

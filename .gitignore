@@ -3,7 +3,7 @@ q.json
 database_X.npy
 database_y.npy
 q.pkl
-
+q.lmdb
 # Virtual environment
 .venv/
 
