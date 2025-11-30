@@ -5,7 +5,6 @@ import numpy as np
 import hashing
 from multiprocessing import Pool
 from lmdb_qtable import LMDBQTable
-from lmdb_qtable import GLOBAL_TXN
 
 EPS_START = 1.0      # Starting epsilon (full exploration)
 EPS_END = 0.05       # Final epsilon (mostly exploitation)
@@ -16,11 +15,12 @@ GLOBAL_QTABLE = None
 
 
 def init_worker(qtable):
-    global GLOBAL_QTABLE, GLOBAL_TXN
+    import lmdb_qtable        # <-- crucial
+    global GLOBAL_QTABLE
     GLOBAL_QTABLE = qtable
 
-    # OPEN ONE READ-ONLY TRANSACTION FOR THIS WORKER
-    GLOBAL_TXN = qtable.env.begin(write=False)
+    lmdb_qtable.GLOBAL_TXN = qtable.env.begin(write=False)
+
 
 
 
