@@ -5,26 +5,23 @@ import numpy as np
 import hashing
 from multiprocessing import Pool
 from lmdb_qtable import LMDBQTable
+from lmdb_qtable import GLOBAL_TXN
 
-# =====================================================================
-# HYPERPARAMETERS
-# =====================================================================
 EPS_START = 1.0      # Starting epsilon (full exploration)
 EPS_END = 0.05       # Final epsilon (mostly exploitation)
 
-# =====================================================================
-# GLOBAL Q-TABLE FOR WORKERS (set once per worker via init_worker)
-# =====================================================================
+#As training grows with exploit more
+
 GLOBAL_QTABLE = None
 
 
 def init_worker(qtable):
-    """
-    Called ONCE per worker process. Sets a read-only reference
-    to the Q-table (snapshot at the time of Pool creation).
-    """
-    global GLOBAL_QTABLE
+    global GLOBAL_QTABLE, GLOBAL_TXN
     GLOBAL_QTABLE = qtable
+
+    # OPEN ONE READ-ONLY TRANSACTION FOR THIS WORKER
+    GLOBAL_TXN = qtable.env.begin(write=False)
+
 
 
 # =====================================================================
@@ -999,7 +996,7 @@ if __name__ == "__main__":
 
     # 1) TRAIN
     games = Games(
-        num_games=250_000,     # increase this for stronger agent
+        num_games=500_000,     # increase this for stronger agent
         processes=cores,
         log_every=10_000,
         chunk_size=100
@@ -1016,7 +1013,7 @@ if __name__ == "__main__":
     # hashing.save_qtable("q.pkl", games.game.q_table)
 
     # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
-    print("Linux training")
+    print("Linux training done")
     eval_games = Games(num_games=1_000, processes=None, log_every=1_000)
     eval_games.run()
 
