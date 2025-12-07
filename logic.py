@@ -1008,7 +1008,7 @@ if __name__ == "__main__":
         chunk_size=100
     )
 
-    games.train()
+    #games.train()
 
     print("TRAINING DONE")
     print("Agent win %:", 100 * games.agent_wins / games.num_games)
