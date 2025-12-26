@@ -45,15 +45,10 @@ def save_qtable(path, qtable):
     print(f"Saved Q-table with {len(qtable)} entries.")
 
 
-# -----------------------------------------
-# Q-TABLE LOAD
-# -----------------------------------------
+
 
 def load_qtable(path):
-    """
-    Load Q-table from binary file.
-    If missing, return empty dict.
-    """
+
 
     curr_time = time.time()
     if not os.path.exists(path):

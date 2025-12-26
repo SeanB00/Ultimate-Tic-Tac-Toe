@@ -5,17 +5,17 @@ import numpy as np
 import hashing
 from multiprocessing import Pool
 from lmdb_qtable import LMDBQTable
+import shrinker
+EPS_START = 1.0      # starting epsilon (full exploration)
+EPS_END = 0.3       # final epsilon (mostly exploitation)
 
-EPS_START = 1.0      # Starting epsilon (full exploration)
-EPS_END = 0.05       # Final epsilon (mostly exploitation)
-
-#As training grows with exploit more
+#as training grows with exploit more linearly
 
 GLOBAL_QTABLE = None
 
 
 def init_worker(qtable):
-    import lmdb_qtable        # <-- crucial
+    import lmdb_qtable
     global GLOBAL_QTABLE
     GLOBAL_QTABLE = qtable
 
@@ -24,17 +24,10 @@ def init_worker(qtable):
 
 
 
-# =====================================================================
-# ULTIMATE TIC TAC TOE GAME ENGINE
-# =====================================================================
-class UltimateTicTacToeGame:
-    """
-    Ultimate Tic Tac Toe environment + Q-learning integration.
 
-    - full_board: 3x3 subboards, each 3x3
-    - sub_boards: 3x3 meta board of who won each subboard
-    - board_rep:  9x9 flattened representation for hashing / symmetry
-    """
+# The game logic
+class UltimateTicTacToeGame:
+
 
     def __init__(self, q_table=None, training=False, multiprocess=False):
         # Board representations
@@ -58,10 +51,16 @@ class UltimateTicTacToeGame:
         # Q-table handling
         # MAIN process: load from disk if q_table is None
         # WORKER processes: q_table is passed in and treated as read-only
+        # Q-table handling
         if q_table is None:
             self.q_table = LMDBQTable("qtable.lmdb")
         else:
             self.q_table = q_table
+
+
+        import lmdb_qtable
+        if lmdb_qtable.GLOBAL_TXN is None:
+            lmdb_qtable.GLOBAL_TXN = self.q_table.env.begin(write=False)
 
         self.training = training
         self.multiprocess = multiprocess
@@ -75,9 +74,6 @@ class UltimateTicTacToeGame:
         # For printing
         self.players = {0: "-", 1: "X", -1: "O"}
 
-    # ------------------------------------------------------------
-    # Utility: Empty cell maps
-    # ------------------------------------------------------------
     def get_empty_places(self):
         """
         Returns 3x3 grid where each cell is a set of empty (r, c)
@@ -94,16 +90,13 @@ class UltimateTicTacToeGame:
         """
         return {(i, j) for i in range(3) for j in range(3)}
 
-    # ------------------------------------------------------------
-    # Basic board helpers
-    # ------------------------------------------------------------
+
     def global_board(self):
         return self.board_rep
 
     def init_game(self):
-        """
-        Reset game state to start a new game.
-        """
+
+        #reseting the game
         self.full_board = np.zeros((3, 3, 3, 3), dtype=int)
         self.sub_boards = np.zeros((3, 3), dtype=int)
         self.empty_places = self.get_empty_places()
@@ -116,9 +109,7 @@ class UltimateTicTacToeGame:
         return self.check_true_win() == 0 and not self.check_true_tie()
 
     def get_playable_boards(self):
-        """
-        Return the set of playable subboards given the current rules.
-        """
+
         if self.curr_board is None:
             return set(self.empty_sub_places)
         if self.curr_board in self.empty_sub_places:
@@ -140,9 +131,7 @@ class UltimateTicTacToeGame:
         print(s)
         print("-" * 9)
 
-    # ------------------------------------------------------------
-    # Win / tie logic
-    # ------------------------------------------------------------
+
     def check_win(self, board):
         """
         Check win on a 3x3 board: returns 1, -1 or 0.
@@ -256,14 +245,9 @@ class UltimateTicTacToeGame:
     # Agent move selection
     # ------------------------------------------------------------
     def agent_train_move(self, epsilon=1.0):
-        """
-        Epsilon-greedy agent move during training.
-        Exploration moves (epsilon branch) do NOT count as
-        'fallback randomness' – random_plays is strictly for cases
-        where Q-table couldn't guide us.
-        """
+
         if random.random() < epsilon:
-            # Pure exploration: random move, not counted as missing-Q fallback
+            # random move, not counted as missing-Q fallback
             self.agent_random_move()
         else:
             self.agent_smart_move()
@@ -325,7 +309,7 @@ class UltimateTicTacToeGame:
                 best = self._select_best_move(moves)
                 return self.apply_agent_move(*best)
 
-        # 3) Otherwise choose best move normally using Q-table
+        # otherwise choose best move normally using Q-table
         if self.curr_board is None:
             playable = tuple(self.empty_sub_places)
         else:
@@ -444,7 +428,6 @@ class UltimateTicTacToeGame:
             return random.choice(winning_moves)
 
         # ----------------------------------------------------
-        # 2️⃣ PRIORITY: Moves in CRITICAL META-WIN BOARDS
         # ----------------------------------------------------
         critical_moves = [
             (bi, bj, r, c)
@@ -825,13 +808,9 @@ def run_games_chunk(args):
     )
 
 
-# =====================================================================
-# TRAINING MANAGER
-# =====================================================================
+
 class Games:
-    """
-    Wrapper to manage many games (training or evaluation).
-    """
+
 
     def __init__(self, num_games, processes=None, log_every=1000, chunk_size=50):
         self.num_games = num_games
@@ -853,7 +832,7 @@ class Games:
     # ------------------------------------------------------------
     # MULTIPROCESS TRAINING (EPOCH-BASED)
     # ------------------------------------------------------------
-    def train(self):
+    def multi_process_train(self):
         """
         Train the Q-table using multiprocessing.
 
@@ -958,7 +937,7 @@ class Games:
     # ------------------------------------------------------------
     # SINGLE-PROCESS RUN (evaluation)
     # ------------------------------------------------------------
-    def run(self):
+    def single_process(self, train = False):
         """
         Run games without exploration (epsilon=0) for evaluation,
         using current Q-table.
@@ -988,21 +967,18 @@ class Games:
         print(f"Done evaluation in {total_t:.2f}s ({speed:.2f} games/sec)")
 
 
-# =====================================================================
-# MAIN
-# =====================================================================
 if __name__ == "__main__":
     cores = multiprocessing.cpu_count()
 
     # 1) TRAIN
     games = Games(
-        num_games=500_000,     # increase this for stronger agent
+        num_games=350_000,     # increase this for stronger agent
         processes=cores,
         log_every=10_000,
         chunk_size=100
     )
 
-    #games.train()
+    games.train()
 
     print("TRAINING DONE")
     print("Agent win %:", 100 * games.agent_wins / games.num_games)
@@ -1017,11 +993,13 @@ if __name__ == "__main__":
     eval_games = Games(num_games=1_000, processes=None, log_every=1_000)
     eval_games.run()
 
-    print("EVAL Agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
-    print("EVAL Player win %:", 100 * eval_games.player_wins / eval_games.num_games)
-    print("EVAL Tie %:", 100 * eval_games.ties / eval_games.num_games)
+    print("EVAL agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
+    print("EVAL player win %:", 100 * eval_games.player_wins / eval_games.num_games)
+    print("EVAL tie %:", 100 * eval_games.ties / eval_games.num_games)
     print(
         "Random % (fallback during eval):",
         100 * eval_games.game.random_plays / eval_games.game.num_plays
         if eval_games.game.num_plays > 0 else 0.0
     )
+    shrinker.refresh()
+

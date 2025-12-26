@@ -3,7 +3,9 @@ q.json
 database_X.npy
 database_y.npy
 q.pkl
-q.lmdb
+qtable.lmdb-lock.lmdb
+qtable.lmdb
+qtable_backup.lmdb
 # Virtual environment
 .venv/
 

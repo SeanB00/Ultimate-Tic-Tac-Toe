@@ -5,7 +5,7 @@ import struct
 KEY_BYTES = 32  # 256-bit keys (fits your encoding)
 
 
-# ⚠️ GLOBAL READ-ONLY TXN IS HERE
+
 GLOBAL_TXN = None
 
 
@@ -43,14 +43,14 @@ class LMDBQTable:
     def __contains__(self, state_int: int) -> bool:
         key = self._k(state_int)
 
-        # ⚠️ use ONE shared read txn instead of creating new
+
         txn = GLOBAL_TXN
         return txn.get(key) is not None
 
     def __getitem__(self, state_int: int):
         key = self._k(state_int)
 
-        # ⚠️ use ONE shared read txn
+
         txn = GLOBAL_TXN
         data = txn.get(key)
         if data is None:
