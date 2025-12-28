@@ -9,6 +9,7 @@ def encode_board_to_int(board):
 
     value = 0
     for v in board:
+
         value = value * 3 + (int(v) + 1)  # force Python int, never NumPy scalar
     return value
 

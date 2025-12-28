@@ -6,8 +6,8 @@ import hashing
 from multiprocessing import Pool
 from lmdb_qtable import LMDBQTable
 import shrinker
-EPS_START = 1.0      # starting epsilon (full exploration)
-EPS_END = 0.3       # final epsilon (mostly exploitation)
+EPS_START = 1.0      # (full exploration)
+EPS_END = 0.3       # (mostly exploitation)
 
 #as training grows with exploit more linearly
 
@@ -48,10 +48,7 @@ class UltimateTicTacToeGame:
         self.empty_sub_places = self.get_empty_sub_places()
         self.curr_board = None
 
-        # Q-table handling
-        # MAIN process: load from disk if q_table is None
-        # WORKER processes: q_table is passed in and treated as read-only
-        # Q-table handling
+
         if q_table is None:
             self.q_table = LMDBQTable("qtable.lmdb")
         else:
@@ -59,13 +56,13 @@ class UltimateTicTacToeGame:
 
 
         import lmdb_qtable
-        if lmdb_qtable.GLOBAL_TXN is None:
+        if lmdb_qtable.GLOBAL_TXN is None and isinstance(q_table, LMDBQTable):
             lmdb_qtable.GLOBAL_TXN = self.q_table.env.begin(write=False)
 
         self.training = training
         self.multiprocess = multiprocess
 
-        # Discount factor
+        # discount factor
         self.gamma = 0.9
 
         # (state_int, target_value) accumulated during game
@@ -116,8 +113,8 @@ class UltimateTicTacToeGame:
             return {self.curr_board}
         return set(self.empty_sub_places)
 
-    def print_board(self):
-        board = self.global_board()
+    def print_board(self, board):
+
         s = ""
         for row in range(9):
             s += "|"
@@ -423,12 +420,11 @@ class UltimateTicTacToeGame:
             best = self.q_best(winning_moves)
             if best is not None:
                 return best
-            # No Q-values among winning moves → fallback random among them
+            # No Q-values among winning moves
             self.random_plays += 1
             return random.choice(winning_moves)
 
-        # ----------------------------------------------------
-        # ----------------------------------------------------
+
         critical_moves = [
             (bi, bj, r, c)
             for (bi, bj, r, c) in moves
@@ -443,16 +439,12 @@ class UltimateTicTacToeGame:
             self.random_plays += 1
             return random.choice(critical_moves)
 
-        # ----------------------------------------------------
-        # 3️⃣ Q-best among all moves
-        # ----------------------------------------------------
+
         best = self.q_best(moves)
         if best is not None:
             return best
 
-        # ----------------------------------------------------
-        # 4️⃣ Final fallback: completely random move (no Q-info)
-        # ----------------------------------------------------
+
         self.random_plays += 1
         return random.choice(moves)
 
@@ -638,19 +630,77 @@ class UltimateTicTacToeGame:
     # ------------------------------------------------------------
     # Symmetry hashing
     # ------------------------------------------------------------
+    # def all_symmetries_fast(self, b):
+    #     """
+    #     Return 8 symmetric variants of a 9x9 board (b).
+    #     """
+    #     bt = b.T
+    #     fh = np.flipud(b)
+    #     fv = np.fliplr(b)
+    #     fd = np.fliplr(bt)
+    #     fad = np.flipud(bt)
+    #     r90 = fad
+    #     r180 = np.flipud(fv)
+    #     r270 = fd
+    #     return [b, r90, r180, r270, fh, fv, fd, fad]
+
     def all_symmetries_fast(self, b):
         """
-        Return 8 symmetric variants of a 9x9 board (b).
+        Return the 8 TRUE UTTT symmetries of a 9x9 board.
+
+        Correctly applies D4 on UTTT structure:
+        - rearrange the 3x3 grid of subboards (treat each subboard as an atom)
+        - apply the same transform inside each 3x3 subboard
         """
-        bt = b.T
-        fh = np.flipud(b)
-        fv = np.fliplr(b)
-        fd = np.fliplr(bt)
-        fad = np.flipud(bt)
-        r90 = fad
-        r180 = np.flipud(fv)
-        r270 = fd
-        return [b, r90, r180, r270, fh, fv, fd, fad]
+
+        import numpy as np
+
+        # ---- transforms that work for BOTH 2D (3x3) and 3D (3x3x9) ----
+        def I(x):
+            return x
+
+        def R90(x):
+            return np.rot90(x, 1, axes=(0, 1))
+
+        def R180(x):
+            return np.rot90(x, 2, axes=(0, 1))
+
+        def R270(x):
+            return np.rot90(x, 3, axes=(0, 1))
+
+        def FLIP_LR(x):
+            return np.flip(x, axis=1)  # mirror left<->right on first two axes
+
+        def FLIP_UD(x):
+            return np.flip(x, axis=0)  # mirror up<->down on first two axes
+
+        def DIAG(x):
+            return np.swapaxes(x, 0, 1)  # reflect main diagonal
+
+        def ADIAG(x):
+            return np.swapaxes(R180(x), 0, 1)  # reflect anti-diagonal
+
+        transforms = [I, R90, R180, R270, FLIP_LR, FLIP_UD, DIAG, ADIAG]
+
+        # reshape 9x9 -> (3,3,3,3)
+        blk = b.reshape(3, 3, 3, 3)
+
+        out = []
+        for f in transforms:
+            # 1) rearrange BIG grid of subboards (treat each subboard as a length-9 atom)
+            big = blk.reshape(3, 3, 9)  # (big_r,big_c,flat_small)
+            big2 = f(big)  # transform only first two axes
+            blk2 = big2.reshape(3, 3, 3, 3)
+
+            # 2) transform INSIDE each small 3x3 board
+            res = np.empty_like(blk2)
+            for i in range(3):
+                for j in range(3):
+                    res[i, j] = f(blk2[i, j])
+
+            out.append(res.reshape(9, 9))
+
+        return out
 
     def canonical_board_int(self, board):
         """
@@ -937,9 +987,9 @@ class Games:
     # ------------------------------------------------------------
     # SINGLE-PROCESS RUN (evaluation)
     # ------------------------------------------------------------
-    def single_process(self, train = False):
+    def single_process_train(self, training=False, epsilon=0.0):
         """
-        Run games without exploration (epsilon=0) for evaluation,
+        Run games without exploration (epsilon=0) for evaluation/training,
         using current Q-table.
         """
         print(f"Running {self.num_games} games single-process (evaluation)...")
@@ -947,7 +997,8 @@ class Games:
 
         for i in range(1, self.num_games + 1):
             # evaluation: no exploration
-            self.game.play_one_game(epsilon=0.0, training=False)
+            self.game.play_one_game(epsilon=epsilon, training=training)
+
             w = self.game.check_true_win()
 
             if w == 1:
@@ -969,16 +1020,16 @@ class Games:
 
 if __name__ == "__main__":
     cores = multiprocessing.cpu_count()
-
+    start_time = time.time()
     # 1) TRAIN
     games = Games(
-        num_games=350_000,     # increase this for stronger agent
+        num_games=500_000,     # increase this for stronger agent
         processes=cores,
         log_every=10_000,
-        chunk_size=100
+        chunk_size=150
     )
 
-    games.train()
+    games.multi_process_train()
 
     print("TRAINING DONE")
     print("Agent win %:", 100 * games.agent_wins / games.num_games)
@@ -991,7 +1042,7 @@ if __name__ == "__main__":
     # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
     print("Linux training done")
     eval_games = Games(num_games=1_000, processes=None, log_every=1_000)
-    eval_games.run()
+    eval_games.single_process_train(training=False, epsilon=0.0)
 
     print("EVAL agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
     print("EVAL player win %:", 100 * eval_games.player_wins / eval_games.num_games)
@@ -1002,4 +1053,9 @@ if __name__ == "__main__":
         if eval_games.game.num_plays > 0 else 0.0
     )
     shrinker.refresh()
+    end_time = time.time()
+    delta_time = end_time - start_time
+    hours = delta_time // 3600
+    mins = (delta_time - 3600 * hours) // 60
+    print(f"Overall run time is {hours:}:{mins:02d}h")
 

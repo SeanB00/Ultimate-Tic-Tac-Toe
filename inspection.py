@@ -1,13 +1,19 @@
 import lmdb
 import struct
+
+import numpy as np
+
 import hashing
 import time
+
+from logic import UltimateTicTacToeGame
 
 # ===== CONFIG =====
 LMDB_PATH = "qtable.lmdb"
 KEY_BYTES = 32
 VALUE_FMT = "di"            # (double q_value, int count)
 VALUE_SIZE = struct.calcsize(VALUE_FMT)
+NUM_PLAYS = 10
 
 PROGRESS_EVERY = 500_000     # print progress every N entries
 # ==================
@@ -15,6 +21,7 @@ PROGRESS_EVERY = 500_000     # print progress every N entries
 
 def decode_state(key_bytes: bytes):
     state_int = int.from_bytes(key_bytes, "big", signed=False)
+
     return hashing.decode_board_from_int(state_int)
 
 
@@ -64,10 +71,12 @@ def inspect_lmdb(path):
 
         cursor = txn.cursor()
         unpack = struct.unpack
-
+        used_entries = 0
         for k, v in cursor:
             entries += 1
 
+            if entries > 15_000_000:
+                break
             # ---- progress ----
             if entries % PROGRESS_EVERY == 0:
                 elapsed = time.time() - start
@@ -85,15 +94,25 @@ def inspect_lmdb(path):
             q, visits = unpack(VALUE_FMT, v)
 
             # ---- visit stats ----
-            sum_visits += visits
-            min_visits = min(min_visits, visits)
-            if visits == 0:
-                zero_visits += 1
 
-            if visits > max_visits:
-                max_visits = visits
-                max_visit_key = k
-                max_visit_q = q
+            b = decode_state(k)
+            non_empty = 0
+            for _ in b:
+                if _ != 0:
+                    non_empty += 1
+
+            if non_empty < NUM_PLAYS:
+
+                used_entries += 1
+                sum_visits += visits
+                min_visits = min(min_visits, visits)
+                if visits == 0:
+                    zero_visits += 1
+
+                if visits > max_visits:
+                    max_visits = visits
+                    max_visit_key = k
+                    max_visit_q = q
 
             # ---- Q stats ----
             sum_q += q
@@ -109,6 +128,7 @@ def inspect_lmdb(path):
 
     print("\n===== SUMMARY =====")
     print(f"Total entries        : {entries}")
+    print(f"Effective entries   : {used_entries}" )
     print(f"Bad key length       : {bad_key_len}")
     print(f"Bad value length     : {bad_val_len}")
     print()
@@ -116,7 +136,7 @@ def inspect_lmdb(path):
     print("===== VISIT STATS =====")
     print(f"Min visits           : {min_visits}")
     print(f"Max visits           : {max_visits}")
-    print(f"Avg visits           : {sum_visits / entries:.3f}")
+    print(f"Avg visits Under {NUM_PLAYS}         : {sum_visits / used_entries:.3f}")
     print(f"Zero-visit states    : {zero_visits}")
     print()
 
@@ -134,24 +154,74 @@ def inspect_lmdb(path):
     print()
 
     board = decode_state(max_visit_key)
+    print(board)
+    print(len(board))
     print_ultimate_board(board)
+
 
 
 def print_ultimate_board(board):
     def sym(x):
-        return {0: ".", 1: "X", -1: "O"}.get(x, str(x))
+        return {0: "-", 1: "X", -1: "O"}.get(x, str(x))
+    board = [[board[9*i+j] for j in range(9)] for i in range(9)]
+    s = ""
+    for row in range(9):
+        s += "|"
+        for col in range(9):
+            s += sym(board[row][col]) + "|"
+            if col % 3 == 2 and col != 8:
+                s += "  |"
+        s += "\n"
+        if row % 3 == 2:
+            s += "\n"
+    print(s)
+    print("-" * 9)
 
-    for big_r in range(3):
-        for small_r in range(3):
-            row = []
-            for big_c in range(3):
-                idx = big_r * 3 + big_c
-                sub = board[idx]
-                row.append(" ".join(sym(sub[small_r][c]) for c in range(3)))
-            print(" | ".join(row))
-        if big_r < 2:
-            print("-" * 29)
 
+def check_symmetries():
+    import logic
+    game = UltimateTicTacToeGame(q_table={}, training=False, multiprocess=False)
+    import numpy as np
+
+    b =board_9x9 = np.array([
+        [ 1,  0, -1,   0,  0,  0,   -1,  0,  1],
+        [ 0,  1,  0,   0,  0,  1,    0, -1,  0],
+        [-1,  0,  1,   0, -1,  0,    1,  0, -1],
+
+        [ 0, -1,  0,   1,  0, -1,    0,  1,  0],
+        [ 1,  0,  1,   0,  1,  0,   -1,  0, -1],
+        [ 0,  1,  0,  -1,  0,  1,    0, 0,  0],
+
+        [-1,  0,  1,   0, -1,  0,    1,  0, -1],
+        [ 0, -1,  0,   1,  0, -1,    0,  0,  0],
+        [ 0,  0, -1,   0,  1,  0,   -1,  0,  1],
+    ], dtype=int)
+
+    symmetries = game.all_symmetries_fast(b)
+    boards = set()
+    new_set = set()
+
+    for board in symmetries:
+        boards.add(game.canonical_board_int(board))
+
+
+
+
+    for board in boards:
+        b = np.array(hashing.decode_board_from_int(board)).reshape((9,9))
+        print(np.array(hashing.decode_board_from_int(board)).reshape((9,9)))
+
+        print("*"*28)
+        new_set.add(game.canonical_board_int(b))
+    print(boards)
+    print(new_set)
+
+
+    pass
 
 if __name__ == "__main__":
+
+
+
+    check_symmetries()
     inspect_lmdb(LMDB_PATH)

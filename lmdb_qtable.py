@@ -2,7 +2,7 @@
 import lmdb
 import struct
 
-KEY_BYTES = 32  # 256-bit keys (fits your encoding)
+KEY_BYTES = 32  # Size of keys
 
 
 
@@ -60,7 +60,7 @@ class LMDBQTable:
     def get(self, state_int: int, default=None):
         key = self._k(state_int)
 
-        # ⚠️ use ONE shared read txn
+
         txn = GLOBAL_TXN
         data = txn.get(key)
         if data is None:

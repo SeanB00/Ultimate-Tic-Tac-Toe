@@ -33,7 +33,7 @@ class BoardGrid(GridLayout):
         self.status_label = status_label
         self.buttons = []
 
-        # Color palette tuned for clarity
+        # colors
         self.base_light = (0.24, 0.28, 0.36, 1)
         self.base_dark = (0.16, 0.18, 0.25, 1)
         self.playable_tint = (0.29, 0.63, 0.85, 1)
