@@ -50,13 +50,13 @@ class UltimateTicTacToeGame:
 
 
         if q_table is None:
-            self.q_table = LMDBQTable("qtable.lmdb")
+            self.q_table = LMDBQTable("fixed_qtable.lmdb")
         else:
             self.q_table = q_table
 
 
         import lmdb_qtable
-        if lmdb_qtable.GLOBAL_TXN is None and isinstance(q_table, LMDBQTable):
+        if lmdb_qtable.GLOBAL_TXN is None and isinstance(self.q_table, LMDBQTable):
             lmdb_qtable.GLOBAL_TXN = self.q_table.env.begin(write=False)
 
         self.training = training
@@ -292,20 +292,21 @@ class UltimateTicTacToeGame:
                             safe_moves.append((bi, bj, r, c))
                     if safe_moves:
                         # Use Q-best among safe moves; fallback handled inside _select_best_move
-                        best = self._select_best_move(safe_moves)
-                        return self.apply_agent_move(*best)
-
+                        best, used = self._select_best_move(safe_moves)
+                        self.apply_agent_move(*best)
+                        return used
                     # No safe move → forced random legal move in current subboard
                     bi, bj = self.curr_board
                     r, c = random.choice(tuple(self.empty_places[bi][bj]))
                     # This is a REAL fallback random (no Q-guided safe option)
                     self.random_plays += 1
-                    return self.apply_agent_move(bi, bj, r, c)
 
+                    self.apply_agent_move(bi, bj, r, c)
+                    return False
                 # We have blocking moves, choose Q-best among them
-                best = self._select_best_move(moves)
-                return self.apply_agent_move(*best)
-
+                best, used = self._select_best_move(moves)
+                self.apply_agent_move(*best)
+                return used
         # otherwise choose best move normally using Q-table
         if self.curr_board is None:
             playable = tuple(self.empty_sub_places)
@@ -322,9 +323,9 @@ class UltimateTicTacToeGame:
             for (r, c) in self.empty_places[bi][bj]
         ]
 
-        best = self._select_best_move(all_moves)
-        return self.apply_agent_move(*best)
-
+        best, used = self._select_best_move(all_moves)
+        self.apply_agent_move(*best)
+        return used
     def agent_random_move(self):
         """
         Agent plays a random legal move.
@@ -419,10 +420,12 @@ class UltimateTicTacToeGame:
         if winning_moves:
             best = self.q_best(winning_moves)
             if best is not None:
-                return best
+                return best, True
             # No Q-values among winning moves
             self.random_plays += 1
-            return random.choice(winning_moves)
+
+
+            return random.choice(winning_moves), False
 
 
         critical_moves = [
@@ -434,19 +437,19 @@ class UltimateTicTacToeGame:
         if critical_moves:
             best = self.q_best(critical_moves)
             if best is not None:
-                return best
+                return best, True
             # No Q-values among critical moves → fallback random among them
             self.random_plays += 1
-            return random.choice(critical_moves)
+            return random.choice(critical_moves), False
 
 
         best = self.q_best(moves)
         if best is not None:
-            return best
+            return best, True
 
 
         self.random_plays += 1
-        return random.choice(moves)
+        return random.choice(moves), False
 
     # ------------------------------------------------------------
     # Threat detection for meta and subboards
@@ -1023,10 +1026,10 @@ if __name__ == "__main__":
     start_time = time.time()
     # 1) TRAIN
     games = Games(
-        num_games=500_000,     # increase this for stronger agent
-        processes=cores,
-        log_every=10_000,
-        chunk_size=150
+    num_games=500_000,     # increase this for stronger agent
+    processes=cores,
+    log_every=10_000,
+    chunk_size=100
     )
 
     games.multi_process_train()
@@ -1036,12 +1039,16 @@ if __name__ == "__main__":
     print("Player win %:", 100 * games.player_wins / games.num_games)
     print("Tie %:", 100 * games.ties / games.num_games)
 
-    # Save resulting Q-table (already a normal dict)
-    # hashing.save_qtable("q.pkl", games.game.q_table)
+    #Save resulting Q-table (already a normal dict)
+    #hashing.save_qtable("q.pkl", games.game.q_table)
 
     # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
     print("Linux training done")
-    eval_games = Games(num_games=1_000, processes=None, log_every=1_000)
+    #shrinker.refresh()
+
+
+
+    eval_games = Games(num_games=1_000, processes=None, log_every=10)
     eval_games.single_process_train(training=False, epsilon=0.0)
 
     print("EVAL agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
@@ -1052,10 +1059,9 @@ if __name__ == "__main__":
         100 * eval_games.game.random_plays / eval_games.game.num_plays
         if eval_games.game.num_plays > 0 else 0.0
     )
-    shrinker.refresh()
     end_time = time.time()
     delta_time = end_time - start_time
     hours = delta_time // 3600
     mins = (delta_time - 3600 * hours) // 60
-    print(f"Overall run time is {hours:}:{mins:02d}h")
+    print(f"Overall run time is {hours}:{mins}h")
 

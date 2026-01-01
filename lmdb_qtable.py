@@ -18,7 +18,7 @@ class LMDBQTable:
         - q.get(state_int, default)
     """
 
-    def __init__(self, path="qtable.lmdb", map_size=1 << 40):
+    def __init__(self, path="fixed_qtable.lmdb", map_size=1 << 40):
         self.env = lmdb.open(
             path,
             map_size=map_size,
@@ -59,8 +59,6 @@ class LMDBQTable:
 
     def get(self, state_int: int, default=None):
         key = self._k(state_int)
-
-
         txn = GLOBAL_TXN
         data = txn.get(key)
         if data is None:

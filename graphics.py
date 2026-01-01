@@ -95,7 +95,11 @@ class BoardGrid(GridLayout):
             return
 
         # AI move
-        self.game.agent_smart_move()
+        used_qtable = self.game.agent_smart_move()
+        if not used_qtable:
+            self.status_label.text = "Random move..."
+        else:
+            self.status_label.text = "AI is not random..."
         self.refresh()
 
         if not self.game.is_game_running():
@@ -143,11 +147,6 @@ class BoardGrid(GridLayout):
         if not self.game.is_game_running():
             return
 
-        if self.game.curr_board is None:
-            self.status_label.text = "Your turn (O): Play in any unfinished (highlighted) sub-board."
-        else:
-            bi, bj = self.game.curr_board
-            self.status_label.text = f"Your turn (O): Must play in highlighted sub-board ({bi+1}, {bj+1})."
 
     def _blend(self, base, tint, factor):
         return tuple((1 - factor) * b + factor * t for b, t in zip(base, tint))
@@ -192,7 +191,11 @@ class UTTTApp(App):
         )
 
         # AI STARTS
-        self.game.agent_smart_move()
+        used_qtable = self.game.agent_smart_move()
+        if not used_qtable:
+            self.status_label.text = "Random move..."
+        else:
+            self.status_label.text = "AI is not random..."
 
         self.board_grid = BoardGrid(self.game, self.status_label, size_hint=(1, 0.9))
 
@@ -211,7 +214,11 @@ class UTTTApp(App):
     def reset_game(self, *args):
         self.game.init_game()
         self.status_label.text = "AI starts..."
-        self.game.agent_smart_move()
+        used_qtable = self.game.agent_smart_move()
+        if not used_qtable:
+            self.status_label.text = "Random move..."
+        else:
+            self.status_label.text = "AI is not random..."
         self.board_grid.refresh()
 
 

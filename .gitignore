@@ -6,6 +6,8 @@ q.pkl
 qtable.lmdb-lock.lmdb
 qtable.lmdb
 qtable_backup.lmdb
+fixed_qtable.lmdb
+fixed_qtable.lmdb-lock
 # Virtual environment
 .venv/
 

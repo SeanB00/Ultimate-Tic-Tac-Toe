@@ -9,7 +9,7 @@ import time
 from logic import UltimateTicTacToeGame
 
 # ===== CONFIG =====
-LMDB_PATH = "qtable.lmdb"
+LMDB_PATH = "fixed_qtable.lmdb"
 KEY_BYTES = 32
 VALUE_FMT = "di"            # (double q_value, int count)
 VALUE_SIZE = struct.calcsize(VALUE_FMT)
@@ -192,7 +192,7 @@ def check_symmetries():
         [ 1,  0,  1,   0,  1,  0,   -1,  0, -1],
         [ 0,  1,  0,  -1,  0,  1,    0, 0,  0],
 
-        [-1,  0,  1,   0, -1,  0,    1,  0, -1],
+        [-1,  0,  0,   0, -1,  0,    1,  0, -1],
         [ 0, -1,  0,   1,  0, -1,    0,  0,  0],
         [ 0,  0, -1,   0,  1,  0,   -1,  0,  1],
     ], dtype=int)
@@ -203,9 +203,6 @@ def check_symmetries():
 
     for board in symmetries:
         boards.add(game.canonical_board_int(board))
-
-
-
 
     for board in boards:
         b = np.array(hashing.decode_board_from_int(board)).reshape((9,9))
