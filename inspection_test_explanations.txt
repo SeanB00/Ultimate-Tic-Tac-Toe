@@ -1,0 +1,12 @@
+Inspection test explanations:
+
+- Board values are valid: Verifies that sampled boards only contain -1, 0, or 1. This confirms there are no corrupted cell values in the state data.
+- Move counts obey turn balance: Checks that the number of X and O moves differ by at most one. This ensures sampled states follow valid turn order.
+- Piece counts sum to 81 cells: Verifies that X, O, and empty counts always sum to 81 cells, so the board encoding stays internally consistent.
+- Visits are non-negative: Ensures visit counters never go negative, which would indicate corrupted training statistics.
+- Q values are finite: Confirms Q values are real numbers (not NaN or infinity), indicating stable numeric data.
+- Symmetry transforms keep 9x9 shape: Validates that symmetry operations preserve the 9x9 board structure, so the symmetry logic does not distort board dimensions.
+- Symmetry transforms preserve piece counts: Checks that rotations/reflections never change how many X or O pieces are on the board, preserving game-state integrity.
+- Canonical hash invariant across symmetries: Ensures all symmetric variants map to the same canonical hash, which is critical for symmetry-aware hashing of board states.
+- Canonical hash equals minimum symmetry hash: Confirms canonical hashing selects the minimum integer hash among all symmetry variants.
+- Symmetry unique count within expected range: Verifies that a board produces between 1 and 8 unique symmetry variants, matching the D4 symmetry group for UTTT boards.
