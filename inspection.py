@@ -21,6 +21,7 @@ PROGRESS_EVERY = 500_000     # print progress every N entries
 MAX_ENTRIES = 5_000_000
 SAMPLE_SIZE = 12_000
 PLOT_SAMPLE_SIZE = 20_000
+SAMPLE_PROGRESS_EVERY = 250_000
 PLOT_OUTPUT_DIR = "inspection_plots"
 TEST_REPORT_PATH = "inspection_test_report.txt"
 TEST_EXPLANATIONS_PATH = "inspection_test_explanations.txt"
@@ -58,6 +59,7 @@ def collect_samples(path, sample_size, max_entries=None, seed=1337):
     unpack = struct.unpack
     samples = []
     seen = 0
+    start = time.time()
 
     for k, v in iter_lmdb_entries(path, max_entries=max_entries):
         if len(k) != KEY_BYTES or len(v) != VALUE_SIZE:
@@ -81,6 +83,10 @@ def collect_samples(path, sample_size, max_entries=None, seed=1337):
         }
 
         seen += 1
+        if SAMPLE_PROGRESS_EVERY and seen % SAMPLE_PROGRESS_EVERY == 0:
+            elapsed = time.time() - start
+            rate = seen / elapsed if elapsed > 0 else 0
+            print(f"[sampling] {seen:,} valid entries scanned ({rate:,.0f} entries/sec)")
         if len(samples) < sample_size:
             samples.append(sample)
         else:
