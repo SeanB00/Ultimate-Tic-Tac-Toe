@@ -1,0 +1,15 @@
+Inspection test report
+Sampled entries: 12000 (from 1000000 valid entries scanned)
+
+[PASS] Board values are valid: Checked 12000 sampled boards.
+[PASS] Move counts obey turn balance: All sampled boards respect turn balance.
+[PASS] Piece counts sum to 81 cells: Piece counts match 81 cells for all samples.
+[PASS] Visits are non-negative: All sampled visit counts are non-negative.
+[PASS] Q values are finite: All sampled Q values are finite.
+[PASS] Symmetry transforms keep 9x9 shape: All symmetry transforms kept 9x9 shape.
+[PASS] Symmetry transforms preserve piece counts: All symmetry transforms preserved piece counts.
+[PASS] Canonical hash invariant across symmetries: Canonical hash invariant across symmetries.
+[PASS] Canonical hash equals minimum symmetry hash: Canonical hash equals minimum symmetry hash.
+[PASS] Symmetry unique count within expected range: Symmetry variants count is within expected range.
+
+Passed 10/10 tests.

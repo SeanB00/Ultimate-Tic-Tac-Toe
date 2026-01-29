@@ -1,3 +1,5 @@
+import math
+
 import lmdb
 import os
 import random
@@ -18,7 +20,7 @@ VALUE_SIZE = struct.calcsize(VALUE_FMT)
 NUM_PLAYS = 10
 
 PROGRESS_EVERY = 500_000     # print progress every N entries
-MAX_ENTRIES = 5_000_000
+MAX_ENTRIES = 1_000_000
 SAMPLE_SIZE = 12_000
 PLOT_SAMPLE_SIZE = 20_000
 SAMPLE_PROGRESS_EVERY = 250_000
@@ -277,13 +279,22 @@ def plot_sample_distributions(samples, output_dir):
 
     os.makedirs(output_dir, exist_ok=True)
 
-    q_values = np.array([sample["q"] for sample in samples], dtype=float)
+    def log1p_normalized(x):
+        res =  math.log1p(abs(x))  / math.log(2)
+        if x > 0:
+            return res
+        return -1*res
+    q_values = np.array(
+        [log1p_normalized(sample["q"]) for sample in samples],
+        dtype=float
+    )
+
+
     visits = np.array([sample["visits"] for sample in samples], dtype=int)
-    non_empty = np.array([sample["non_empty"] for sample in samples], dtype=int)
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(q_values, bins=60, color="#4C72B0", edgecolor="white")
-    ax.set_title("Sampled Q-value distribution")
+    ax.set_title("Sampled Q-value distribution (with log)")
     ax.set_xlabel("Q value")
     ax.set_ylabel("Count")
     fig.tight_layout()
@@ -292,7 +303,7 @@ def plot_sample_distributions(samples, output_dir):
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(visits, bins=60, color="#55A868", edgecolor="white", log=True)
-    ax.set_title("Sampled visit-count distribution (log scale)")
+    ax.set_title("Sampled visit-count distribution")
     ax.set_xlabel("Visit count")
     ax.set_ylabel("Count (log scale)")
     fig.tight_layout()
@@ -300,12 +311,12 @@ def plot_sample_distributions(samples, output_dir):
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(non_empty, bins=range(0, 82, 3), color="#C44E52", edgecolor="white")
-    ax.set_title("Sampled non-empty cell counts")
-    ax.set_xlabel("Non-empty cells")
-    ax.set_ylabel("Count")
+    ax.hexbin(visits, q_values, gridsize=50, cmap="viridis", mincnt=1, xscale="log")
+    ax.set_title("Q value vs visit count (log scale)")
+    ax.set_xlabel("Visit count (log scale)")
+    ax.set_ylabel("Q value")
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, "non_empty_cells.png"), dpi=150)
+    fig.savefig(os.path.join(output_dir, "q_vs_visits.png"), dpi=150)
     plt.close(fig)
 
 
@@ -487,5 +498,5 @@ def print_ultimate_board(board):
 
 
 if __name__ == "__main__":
-    run_inspection_suite(LMDB_PATH)
+    #run_inspection_suite(LMDB_PATH)
     inspect_lmdb(LMDB_PATH)

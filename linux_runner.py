@@ -35,6 +35,7 @@ def main():
         "source venv/bin/activate && "
         "pip install --upgrade pip && "
         "pip install numpy && "
+        "pip install -r torch && "
         f"{PYTHON} {script} {' '.join(args)}"
     )
 

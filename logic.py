@@ -7,7 +7,7 @@ from multiprocessing import Pool
 from lmdb_qtable import LMDBQTable
 import shrinker
 EPS_START = 1.0      # (full exploration)
-EPS_END = 0.3       # (mostly exploitation)
+EPS_END = 0.1       # (mostly exploitation)
 
 #as training grows with exploit more linearly
 
@@ -1044,11 +1044,11 @@ if __name__ == "__main__":
 
     # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
     print("Linux training done")
-    #shrinker.refresh()
+    shrinker.refresh()
 
 
 
-    eval_games = Games(num_games=1_000, processes=None, log_every=10)
+    eval_games = Games(num_games=2_000, processes=None, log_every=10)
     eval_games.single_process_train(training=False, epsilon=0.0)
 
     print("EVAL agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
