@@ -5,12 +5,18 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.core.window import Window
 from kivy.properties import ObjectProperty
-
 from kivy.graphics import Color, Line
 
+import torch
+
 from logic import UltimateTicTacToeGame
+from CNN_utils import UltimateTicTacToeCNN, load_model
+from CNN import TrainConfig
 
 
+# =====================================================
+# CELL BUTTON
+# =====================================================
 class CellButton(Button):
     def __init__(self, global_r, global_c, **kwargs):
         super().__init__(**kwargs)
@@ -21,19 +27,23 @@ class CellButton(Button):
         self.background_normal = ''
 
 
+# =====================================================
+# BOARD GRID
+# =====================================================
 class BoardGrid(GridLayout):
     game = ObjectProperty(None)
     status_label = ObjectProperty(None)
+    app = ObjectProperty(None)
 
-    def __init__(self, game, status_label, **kwargs):
+    def __init__(self, game, status_label, app, **kwargs):
         super().__init__(**kwargs)
         self.cols = 9
         self.rows = 9
         self.game = game
         self.status_label = status_label
+        self.app = app
         self.buttons = []
 
-        # colors
         self.base_light = (0.24, 0.28, 0.36, 1)
         self.base_dark = (0.16, 0.18, 0.25, 1)
         self.playable_tint = (0.29, 0.63, 0.85, 1)
@@ -45,7 +55,6 @@ class BoardGrid(GridLayout):
             row_buttons = []
             for c in range(9):
 
-                # sub-board shading
                 bi = r // 3
                 bj = c // 3
                 base = self.base_light if (bi + bj) % 2 == 0 else self.base_dark
@@ -53,6 +62,7 @@ class BoardGrid(GridLayout):
                 btn = CellButton(r, c, text="", background_color=base)
                 btn.base_color = base
                 btn.bind(on_release=self.on_cell_pressed)
+
                 row_buttons.append(btn)
                 self.add_widget(btn)
 
@@ -62,6 +72,9 @@ class BoardGrid(GridLayout):
         self.bind(size=self.update_grid_lines, pos=self.update_grid_lines)
         self.update_grid_lines()
 
+    # =====================================================
+    # CLICK
+    # =====================================================
     def on_cell_pressed(self, btn):
 
         if not self.game.is_game_running():
@@ -69,13 +82,11 @@ class BoardGrid(GridLayout):
 
         gr, gc = btn.global_r, btn.global_c
 
-        # FIXED MAPPING
         bi = gr // 3
         r  = gr % 3
         bj = gc // 3
         c  = gc % 3
 
-        # illegal placement checks
         if self.game.full_board[bi][bj][r][c] != 0:
             return
 
@@ -86,7 +97,6 @@ class BoardGrid(GridLayout):
             if self.game.curr_board != (bi, bj):
                 return
 
-        # apply human move
         self.apply_player_move(bi, bj, r, c)
         self.refresh()
 
@@ -94,21 +104,29 @@ class BoardGrid(GridLayout):
             self.show_result()
             return
 
-        # AI move
-        used_qtable = self.game.agent_smart_move()
-        if not used_qtable:
-            self.status_label.text = "Random move..."
+        # ================= AI MOVE =================
+        if self.app.mode == "table":
+            used_qtable = self.game.agent_smart_move()
+            if not used_qtable:
+                self.status_label.text = "Random move..."
+            else:
+                self.status_label.text = "Q-table move"
         else:
-            self.status_label.text = "AI is not random..."
+            self.game.agent_smart_move()
+            self.status_label.text = "CNN move"
+
         self.refresh()
 
         if not self.game.is_game_running():
             self.show_result()
 
+    # =====================================================
+    # PLAYER MOVE
+    # =====================================================
     def apply_player_move(self, bi, bj, r, c):
         g = self.game
         g.full_board[bi][bj][r][c] = g.player_symbol
-        g.place_in_rep(bi,bj,r,c,g.player_symbol)
+        g.place_in_rep(bi, bj, r, c, g.player_symbol)
 
         g.empty_places[bi][bj].remove((r, c))
 
@@ -121,32 +139,38 @@ class BoardGrid(GridLayout):
         next_board = (r, c)
         g.curr_board = None if g.sub_board_is_done(*next_board) else next_board
 
+    # =====================================================
+    # REFRESH
+    # =====================================================
     def refresh(self):
+
         board = self.game.global_board()
         playable_boards = self.game.get_playable_boards() if self.game.is_game_running() else set()
+
         for r in range(9):
             for c in range(9):
+
+                bi = r // 3
+                bj = c // 3
+                sub_status = self.game.sub_boards[bi][bj]
+
+                # Fill won subboard fully
+                if sub_status != 0:
+                    self.buttons[r][c].text = "X" if sub_status == 1 else "O"
+                    self.buttons[r][c].background_color = self.completed_color
+                    continue
+
                 v = board[r][c]
                 self.buttons[r][c].text = "X" if v == 1 else ("O" if v == -1 else "")
 
-                # Update coloring to highlight legal boards
-                bi = r // 3
-                bj = c // 3
-
                 base = self.buttons[r][c].base_color
 
-                if self.game.sub_board_is_done(bi, bj):
-                    color = self.completed_color
-                elif (bi, bj) in playable_boards:
+                if (bi, bj) in playable_boards:
                     color = self._blend(base, self.playable_tint, 0.55)
                 else:
                     color = self._blend(base, self.unavailable_tint, 0.35)
 
                 self.buttons[r][c].background_color = color
-
-        if not self.game.is_game_running():
-            return
-
 
     def _blend(self, base, tint, factor):
         return tuple((1 - factor) * b + factor * t for b, t in zip(base, tint))
@@ -175,50 +199,81 @@ class BoardGrid(GridLayout):
                 Line(points=[x0, y0 + i * ch, x0 + self.width, y0 + i * ch], width=width)
 
 
+# =====================================================
+# APP
+# =====================================================
 class UTTTApp(App):
+
     def build(self):
+
         Window.size = (720, 820)
+
+        self.mode = "table"
 
         root = BoxLayout(orientation='vertical', padding=10, spacing=10)
 
-        self.game = UltimateTicTacToeGame()
-        self.game.init_game()
-
         self.status_label = Label(
-            text="AI is making the first move...",
+            text="Choose mode and start",
             size_hint=(1, 0.1),
             font_size=20
         )
 
-        # AI STARTS
-        used_qtable = self.game.agent_smart_move()
-        if not used_qtable:
-            self.status_label.text = "Random move..."
-        else:
-            self.status_label.text = "AI is not random..."
+        top = BoxLayout(size_hint=(1, 0.1))
 
-        self.board_grid = BoardGrid(self.game, self.status_label, size_hint=(1, 0.9))
-
-        top = BoxLayout(orientation='horizontal', size_hint=(1, 0.1))
         reset = Button(text="Reset", size_hint=(0.2, 1))
         reset.bind(on_release=self.reset_game)
 
+        cnn_btn = Button(text="Play vs CNN")
+        table_btn = Button(text="Play vs Q-Table")
+
+        cnn_btn.bind(on_release=lambda x: self.set_mode("cnn"))
+        table_btn.bind(on_release=lambda x: self.set_mode("table"))
+
         top.add_widget(reset)
+        top.add_widget(cnn_btn)
+        top.add_widget(table_btn)
         top.add_widget(self.status_label)
 
         root.add_widget(top)
+
+        self.init_game_instance()
+
+        self.board_grid = BoardGrid(self.game, self.status_label, self, size_hint=(1, 0.9))
         root.add_widget(self.board_grid)
 
         return root
 
-    def reset_game(self, *args):
-        self.game.init_game()
-        self.status_label.text = "AI starts..."
-        used_qtable = self.game.agent_smart_move()
-        if not used_qtable:
-            self.status_label.text = "Random move..."
+    # =====================================================
+    # CREATE GAME OBJECT BASED ON MODE
+    # =====================================================
+    def init_game_instance(self):
+
+        if self.mode == "table":
+            self.game = UltimateTicTacToeGame()
         else:
-            self.status_label.text = "AI is not random..."
+            model_option = "A"
+            run_dir = TrainConfig.out_dir
+            model, device = load_model(run_dir, model_option)
+
+            self.game = UltimateTicTacToeCNN(
+                model=model,
+                device=device,
+                mode="local_priority",
+                q_table={},
+                training=False,
+                multiprocess=False,
+            )
+
+        self.game.init_game()
+
+    def set_mode(self, mode):
+        self.mode = mode
+        self.reset_game()
+
+    def reset_game(self, *args):
+        self.init_game_instance()
+        self.board_grid.game = self.game
+        self.status_label.text = f"Mode: {self.mode}"
         self.board_grid.refresh()
 
 
