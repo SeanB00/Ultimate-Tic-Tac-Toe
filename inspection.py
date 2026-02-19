@@ -1,42 +1,70 @@
-import math
-
 import lmdb
 import os
 import random
 import struct
 import time
-
 import numpy as np
+import matplotlib.pyplot as plt
 
 import hashing
-
 from logic import UltimateTicTacToeGame
 
-# ===== CONFIG =====
+# ==================================================
+# ===================== CONFIG =====================
+# ==================================================
+
+# Path to the LMDB database that stores your fixed Q-table.
 LMDB_PATH = "fixed_qtable.lmdb"
+
+# LMDB key size in bytes.
+# Your Q-table uses 32-byte keys (state_int encoded as 32 bytes big-endian).
 KEY_BYTES = 32
-VALUE_FMT = "di"            # (double q_value, int count)
+
+# LMDB value format:
+# "d" = double (q_value), "i" = int (visit count)
+# Must match exactly how you packed values when writing the table.
+VALUE_FMT = "di"
+
+# Expected size (in bytes) of each LMDB value entry, computed from VALUE_FMT.
 VALUE_SIZE = struct.calcsize(VALUE_FMT)
+
+# (Used in inspect_lmdb filtering in your original file)
+# Minimum number of non-empty cells threshold used to decide "effective entries".
 NUM_PLAYS = 10
 
-PROGRESS_EVERY = 500_000     # print progress every N entries
-MAX_ENTRIES = 1_000_000
-SAMPLE_SIZE = 12_000
-PLOT_SAMPLE_SIZE = 20_000
-SAMPLE_PROGRESS_EVERY = 250_000
-PLOT_OUTPUT_DIR = "inspection_plots"
-TEST_REPORT_PATH = "inspection_test_report.txt"
-TEST_EXPLANATIONS_PATH = "inspection_test_explanations.txt"
-# ==================
+# Print progress during full LMDB scan every N scanned entries.
+PROGRESS_EVERY = 500_000
 
+# Stop scanning after this many entries (for speed on huge DB).
+# Set to None if you want to scan everything (not recommended on 150M states).
+MAX_ENTRIES = 1_000_000
+
+# How many boards to keep for running the data tests (reservoir sampling).
+SAMPLE_SIZE = 1_000_000
+
+# How many boards to keep for plotting.
+# (We sample separately with a different seed so plots vary if you want.)
+PLOT_SAMPLE_SIZE = 20_000
+
+# Print progress during sampling every N valid entries scanned.
+SAMPLE_PROGRESS_EVERY = 250_000
+
+# Where to save plot images (PNG).
+PLOT_OUTPUT_DIR = "inspection_plots"
+
+
+# ==================================================
+# ================== LMDB HELPERS ==================
+# ==================================================
 
 def decode_state(key_bytes: bytes):
+    """Decode 32-byte key -> state_int -> 81-length board list via hashing.decode_board_from_int."""
     state_int = int.from_bytes(key_bytes, "big", signed=False)
-
     return hashing.decode_board_from_int(state_int)
 
 
 def iter_lmdb_entries(path, max_entries=None):
+    """Iterate over (key, value) in LMDB up to max_entries."""
     env = lmdb.open(
         path,
         readonly=True,
@@ -56,7 +84,15 @@ def iter_lmdb_entries(path, max_entries=None):
         env.close()
 
 
+# ==================================================
+# ===================== SAMPLING ===================
+# ==================================================
+
 def collect_samples(path, sample_size, max_entries=None, seed=1337):
+    """
+    Reservoir-sample up to sample_size valid entries from LMDB scan.
+    Keeps sample uniform over the scanned stream.
+    """
     rng = random.Random(seed)
     unpack = struct.unpack
     samples = []
@@ -69,6 +105,7 @@ def collect_samples(path, sample_size, max_entries=None, seed=1337):
 
         q, visits = unpack(VALUE_FMT, v)
         board = np.array(decode_state(k)).reshape((9, 9))
+
         flat = board.ravel()
         x_count = int(np.count_nonzero(flat == 1))
         o_count = int(np.count_nonzero(flat == -1))
@@ -85,10 +122,13 @@ def collect_samples(path, sample_size, max_entries=None, seed=1337):
         }
 
         seen += 1
-        if SAMPLE_PROGRESS_EVERY and seen % SAMPLE_PROGRESS_EVERY == 0:
+
+        if SAMPLE_PROGRESS_EVERY and (seen % SAMPLE_PROGRESS_EVERY == 0):
             elapsed = time.time() - start
             rate = seen / elapsed if elapsed > 0 else 0
             print(f"[sampling] {seen:,} valid entries scanned ({rate:,.0f} entries/sec)")
+
+        # reservoir sampling
         if len(samples) < sample_size:
             samples.append(sample)
         else:
@@ -98,6 +138,11 @@ def collect_samples(path, sample_size, max_entries=None, seed=1337):
 
     return samples, seen
 
+
+# ==================================================
+# ===================== TESTS ======================
+# (THIS IS YOUR ORIGINAL FULL SUITE, PRINT ONLY)
+# ==================================================
 
 def run_data_tests(samples, game):
     results = []
@@ -172,9 +217,7 @@ def run_data_tests(samples, game):
     def test_symmetry_unique_count():
         for sample in samples:
             syms = game.all_symmetries_fast(sample["board"])
-            unique = {
-                hashing.encode_board_to_int(sym.ravel()) for sym in syms
-            }
+            unique = {hashing.encode_board_to_int(sym.ravel()) for sym in syms}
             if not (1 <= len(unique) <= 8):
                 return False, "Symmetry unique count outside [1, 8]."
         return True, "Symmetry variants count is within expected range."
@@ -192,153 +235,88 @@ def run_data_tests(samples, game):
         ("Symmetry unique count within expected range", test_symmetry_unique_count),
     ]
 
+    print("\n===== INSPECTION TESTS =====")
+    passed = 0
     for name, func in tests:
-        passed, details = func()
-        record(name, passed, details)
+        ok, details = func()
+        record(name, ok, details)
+        print(f"[{'PASS' if ok else 'FAIL'}] {name}: {details}")
+        if ok:
+            passed += 1
 
+    print(f"\nPassed {passed}/{len(tests)} tests.\n")
     return results
 
 
-TEST_EXPLANATIONS = {
-    "Board values are valid": (
-        "Verifies that sampled boards only contain -1, 0, or 1. "
-        "This confirms there are no corrupted cell values in the state data."
-    ),
-    "Move counts obey turn balance": (
-        "Checks that the number of X and O moves differ by at most one. "
-        "This ensures sampled states follow valid turn order."
-    ),
-    "Piece counts sum to 81 cells": (
-        "Verifies that X, O, and empty counts always sum to 81 cells, "
-        "so the board encoding stays internally consistent."
-    ),
-    "Visits are non-negative": (
-        "Ensures visit counters never go negative, which would indicate "
-        "corrupted training statistics."
-    ),
-    "Q values are finite": (
-        "Confirms Q values are real numbers (not NaN or infinity), "
-        "indicating stable numeric data."
-    ),
-    "Symmetry transforms keep 9x9 shape": (
-        "Validates that symmetry operations preserve the 9x9 board structure, "
-        "so the symmetry logic does not distort board dimensions."
-    ),
-    "Symmetry transforms preserve piece counts": (
-        "Checks that rotations/reflections never change how many X or O pieces "
-        "are on the board, preserving game-state integrity."
-    ),
-    "Canonical hash invariant across symmetries": (
-        "Ensures all symmetric variants map to the same canonical hash, which "
-        "is critical for symmetry-aware hashing of board states."
-    ),
-    "Canonical hash equals minimum symmetry hash": (
-        "Confirms canonical hashing selects the minimum integer hash among all "
-        "symmetry variants."
-    ),
-    "Symmetry unique count within expected range": (
-        "Verifies that a board produces between 1 and 8 unique symmetry variants, "
-        "matching the D4 symmetry group for UTTT boards."
-    ),
-}
-
-
-def write_test_explanations(path):
-    lines = ["Inspection test explanations:", ""]
-    for name, description in TEST_EXPLANATIONS.items():
-        lines.append(f"- {name}: {description}")
-    lines.append("")
-
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines))
-
-
-def write_test_report(path, results, sample_count, seen_count):
-    lines = [
-        "Inspection test report",
-        f"Sampled entries: {sample_count} (from {seen_count} valid entries scanned)",
-        "",
-    ]
-
-    passed = 0
-    for result in results:
-        status = "PASS" if result["passed"] else "FAIL"
-        if result["passed"]:
-            passed += 1
-        lines.append(f"[{status}] {result['name']}: {result['details']}")
-
-    lines.append("")
-    lines.append(f"Passed {passed}/{len(results)} tests.")
-
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines))
-
+# ==================================================
+# ===================== PLOTS ======================
+# (SAVED TO FILES, REGULAR LINEAR GRAPHS)
+# ==================================================
 
 def plot_sample_distributions(samples, output_dir):
-    import matplotlib.pyplot as plt
-
     os.makedirs(output_dir, exist_ok=True)
 
-    def log1p_normalized(x):
-        res =  math.log1p(abs(x))  / math.log(2)
-        if x > 0:
-            return res
-        return -1*res
-    q_values = np.array(
-        [log1p_normalized(sample["q"]) for sample in samples],
-        dtype=float
-    )
-
-
+    q_values = np.array([sample["q"] for sample in samples], dtype=float)
     visits = np.array([sample["visits"] for sample in samples], dtype=int)
 
+    # Q histogram
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(q_values, bins=60, color="#4C72B0", edgecolor="white")
-    ax.set_title("Sampled Q-value distribution (with log)")
+    ax.hist(q_values, bins=60, edgecolor="black")
+    ax.set_title("Sampled Q-value distribution")
     ax.set_xlabel("Q value")
     ax.set_ylabel("Count")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "q_value_distribution.png"), dpi=150)
     plt.close(fig)
 
+    # Visits histogram (linear, not log)
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(visits, bins=60, color="#55A868", edgecolor="white", log=True)
+    ax.hist(visits, bins=60, edgecolor="black")
     ax.set_title("Sampled visit-count distribution")
     ax.set_xlabel("Visit count")
-    ax.set_ylabel("Count (log scale)")
+    ax.set_ylabel("Count")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "visit_distribution.png"), dpi=150)
     plt.close(fig)
 
+    # Q vs visits scatter (linear)
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hexbin(visits, q_values, gridsize=50, cmap="viridis", mincnt=1, xscale="log")
-    ax.set_title("Q value vs visit count (log scale)")
-    ax.set_xlabel("Visit count (log scale)")
+    ax.scatter(visits, q_values, s=5, alpha=0.3)
+    ax.set_title("Q value vs visit count")
+    ax.set_xlabel("Visit count")
     ax.set_ylabel("Q value")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "q_vs_visits.png"), dpi=150)
     plt.close(fig)
 
+    print(f"Plots saved to: {output_dir}")
+
+
+# ==================================================
+# ================== INSPECTION RUN ================
+# ==================================================
 
 def run_inspection_suite(path):
     game = UltimateTicTacToeGame(q_table={}, training=False, multiprocess=False)
 
+    print(">>> Collecting samples for tests...")
     samples, seen = collect_samples(
         path,
         sample_size=SAMPLE_SIZE,
         max_entries=MAX_ENTRIES,
     )
+    print(f">>> Samples collected: {len(samples)} (from {seen} valid scanned entries)\n")
 
+    print(">>> Collecting samples for plots...")
     plot_samples, _ = collect_samples(
         path,
         sample_size=min(PLOT_SAMPLE_SIZE, SAMPLE_SIZE),
         max_entries=MAX_ENTRIES,
         seed=2024,
     )
+    print(f">>> Plot samples collected: {len(plot_samples)}\n")
 
     results = run_data_tests(samples, game)
-    write_test_report(TEST_REPORT_PATH, results, len(samples), seen)
-    write_test_explanations(TEST_EXPLANATIONS_PATH)
     plot_sample_distributions(plot_samples, PLOT_OUTPUT_DIR)
 
     return results
@@ -354,8 +332,8 @@ def inspect_lmdb(path):
         subdir=False,
     )
 
-    # ---- running statistics ----
     entries = 0
+    used_entries = 0
 
     min_q = float("inf")
     max_q = float("-inf")
@@ -376,6 +354,7 @@ def inspect_lmdb(path):
     bad_val_len = 0
 
     start = time.time()
+    unpack = struct.unpack
 
     with env.begin() as txn:
         info = env.info()
@@ -389,19 +368,15 @@ def inspect_lmdb(path):
         print()
 
         cursor = txn.cursor()
-        unpack = struct.unpack
-        used_entries = 0
         for k, v in cursor:
             entries += 1
-
-            if entries > 15_000_000:
+            if MAX_ENTRIES is not None and entries >= MAX_ENTRIES:
                 break
-            # ---- progress ----
-            if entries % PROGRESS_EVERY == 0:
+
+            if PROGRESS_EVERY and (entries % PROGRESS_EVERY == 0):
                 elapsed = time.time() - start
                 print(f"[{entries:,}] scanned ({entries/elapsed:,.0f} entries/sec)")
 
-            # ---- key/value sanity ----
             if len(k) != KEY_BYTES:
                 bad_key_len += 1
                 continue
@@ -412,16 +387,15 @@ def inspect_lmdb(path):
 
             q, visits = unpack(VALUE_FMT, v)
 
-            # ---- visit stats ----
-
+            # decode board and count non-empty
             b = decode_state(k)
             non_empty = 0
-            for _ in b:
-                if _ != 0:
+            for cell in b:
+                if cell != 0:
                     non_empty += 1
 
+            # keep your original "effective entries" condition: non_empty < NUM_PLAYS
             if non_empty < NUM_PLAYS:
-
                 used_entries += 1
                 sum_visits += visits
                 min_visits = min(min_visits, visits)
@@ -433,7 +407,6 @@ def inspect_lmdb(path):
                     max_visit_key = k
                     max_visit_q = q
 
-            # ---- Q stats ----
             sum_q += q
             min_q = min(min_q, q)
             max_q = max(max_q, q)
@@ -447,15 +420,18 @@ def inspect_lmdb(path):
 
     print("\n===== SUMMARY =====")
     print(f"Total entries        : {entries}")
-    print(f"Effective entries   : {used_entries}" )
+    print(f"Effective entries    : {used_entries}")
     print(f"Bad key length       : {bad_key_len}")
     print(f"Bad value length     : {bad_val_len}")
     print()
 
-    print("===== VISIT STATS =====")
-    print(f"Min visits           : {min_visits}")
-    print(f"Max visits           : {max_visits}")
-    print(f"Avg visits Under {NUM_PLAYS}         : {sum_visits / used_entries:.3f}")
+    print("===== VISIT STATS (for non_empty < NUM_PLAYS) =====")
+    print(f"Min visits           : {min_visits if used_entries > 0 else 'N/A'}")
+    print(f"Max visits           : {max_visits if used_entries > 0 else 'N/A'}")
+    if used_entries > 0:
+        print(f"Avg visits           : {sum_visits / used_entries:.3f}")
+    else:
+        print("Avg visits           : N/A")
     print(f"Zero-visit states    : {zero_visits}")
     print()
 
@@ -467,22 +443,20 @@ def inspect_lmdb(path):
     print(f"Negative Q states    : {negative_q}")
     print()
 
-    print("===== MOST VISITED STATE =====")
-    print(f"Visits : {max_visits}")
-    print(f"Q-value: {max_visit_q}")
-    print()
-
-    board = decode_state(max_visit_key)
-    print(board)
-    print(len(board))
-    print_ultimate_board(board)
-
+    if max_visit_key is not None:
+        print("===== MOST VISITED STATE (among non_empty < NUM_PLAYS) =====")
+        print(f"Visits : {max_visits}")
+        print(f"Q-value: {max_visit_q}")
+        print()
+        board = decode_state(max_visit_key)
+        print_ultimate_board(board)
 
 
 def print_ultimate_board(board):
     def sym(x):
         return {0: "-", 1: "X", -1: "O"}.get(x, str(x))
-    board = [[board[9*i+j] for j in range(9)] for i in range(9)]
+
+    board = [[board[9 * i + j] for j in range(9)] for i in range(9)]
     s = ""
     for row in range(9):
         s += "|"
@@ -498,5 +472,6 @@ def print_ultimate_board(board):
 
 
 if __name__ == "__main__":
-    #run_inspection_suite(LMDB_PATH)
+    # Quick DB stats + sample suite
     inspect_lmdb(LMDB_PATH)
+    run_inspection_suite(LMDB_PATH)

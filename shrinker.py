@@ -1,19 +1,19 @@
 import lmdb
 import os
-def shrink(dst="qtable_shrink.lmdb", src="fixed_qtable.lmdb"):
+def shrinkTo(dst="qtable_shrink.lmdb", src="fixed_qtable.lmdb"):
     env = lmdb.open(src, readonly=True, lock=False, subdir=False)
     env.copy(dst, compact=True)   # compact=True = shrink pages
     env.close()
 
-def refresh():
-    shrink()
+def refresh(src="fixed_qtable.lmdb", dst="qtable_shrink.lmdb"):
+    shrinkTo(dst, src)
     try:
-        if os.path.exists("qtable_shrink.lmdb"):
-            os.remove("fixed_qtable.lmdb")
-        os.rename("qtable_shrink.lmdb", "fixed_qtable.lmdb")
+        if os.path.exists(dst):
+            os.remove(src)
+        os.rename(dst, src)
     except FileNotFoundError:
         print("File not found.")
 if __name__ == "__main__":
-    refresh()
+    refresh("backup_qtable.lmdb")
 
 

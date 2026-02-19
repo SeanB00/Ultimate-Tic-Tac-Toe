@@ -18,7 +18,7 @@ class LMDBQTable:
         - q.get(state_int, default)
     """
 
-    def __init__(self, path="fixed_qtable.lmdb", map_size=1 << 40):
+    def __init__(self, path="fixed_qtable.lmdb", map_size=15 * 1 << 30):
         self.env = lmdb.open(
             path,
             map_size=map_size,

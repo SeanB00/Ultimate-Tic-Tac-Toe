@@ -1,239 +1,303 @@
-# train_cnn_from_lmdb_verified.py
-
+# cnn_train.py
 import os
-import random
 import time
+import random
+import struct
+from dataclasses import dataclass
+from typing import Dict, List
+
 import numpy as np
+import lmdb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 import hashing
-from lmdb_qtable import LMDBQTable
+from logic import UltimateTicTacToeGame
 
 
 # ============================================================
-# DEVICE
+# ============================ CONFIG =========================
 # ============================================================
 
-def get_device():
-    if torch.cuda.is_available():
-        print("Using CUDA GPU")
+@dataclass
+class TrainConfig:
+    lmdb_path: str = "fixed_qtable.lmdb"
+
+    batch_size: int = 256
+    val_size: int = 2048
+    steps: int = 20_000
+    lr: float = 1e-4
+
+    log_every: int = 100
+    val_every: int = 500
+    save_every: int = 2000
+
+    out_dir: str = "cnn_runs"
+    model_option: str = "A"   # A / B / C / D / E
+
+    min_count: int = 1
+
+    prefer_cuda: bool = True
+
+
+# ============================================================
+# ======================= DEVICE ==============================
+# ============================================================
+
+def pick_device(prefer_cuda=True):
+    if prefer_cuda and torch.cuda.is_available():
         return torch.device("cuda")
-    print("Using CPU")
     return torch.device("cpu")
 
 
 # ============================================================
-# UTTT SYMMETRY
+# ======================== MODELS =============================
 # ============================================================
 
-def apply_uttt_symmetry(board9, k):
-    def R90(x): return np.rot90(x, 1)
-    def R180(x): return np.rot90(x, 2)
-    def R270(x): return np.rot90(x, 3)
-    def FLIP_LR(x): return np.fliplr(x)
-    def FLIP_UD(x): return np.flipud(x)
-    def DIAG(x): return x.T
-    def ADIAG(x): return R180(x).T
-
-    funcs = [lambda x: x, R90, R180, R270, FLIP_LR, FLIP_UD, DIAG, ADIAG]
-    f = funcs[k]
-
-    blk = board9.reshape(3, 3, 3, 3)
-    big = blk.reshape(3, 3, 9)
-    big = f(big)
-    blk = big.reshape(3, 3, 3, 3)
-
-    out = np.empty_like(blk)
-    for i in range(3):
-        for j in range(3):
-            out[i, j] = f(blk[i, j])
-
-    return out.reshape(9, 9)
+def act(name):
+    name = name.lower()
+    if name == "relu":
+        return nn.ReLU(inplace=True)
+    if name == "gelu":
+        return nn.GELU()
+    if name == "leakyrelu":
+        return nn.LeakyReLU(0.1, inplace=True)
+    if name == "tanh":
+        return nn.Tanh()
+    raise ValueError
 
 
-# ============================================================
-# LMDB SAMPLER
-# ============================================================
-
-class LMDBSampler:
-    def __init__(self, lmdb_path):
-        self.qtable = LMDBQTable(lmdb_path)
-        self.env = self.qtable.env
-        self.txn = self.env.begin(write=False)
-        self.cursor = self.txn.cursor()
-
-    def sample_batch(self, batch_size):
-        X = np.empty((batch_size, 9, 9), dtype=np.int8)
-        Y = np.empty(batch_size, dtype=np.float32)
-
-        i = 0
-        while i < batch_size:
-            r = random.getrandbits(256)
-            key = r.to_bytes(32, "big")
-            if not self.cursor.set_range(key):
-                self.cursor.first()
-
-            state_int = int.from_bytes(self.cursor.key(), "big")
-            val, _ = self.qtable._decode(self.cursor.value())
-
-            board = hashing.decode_board_from_int(state_int)
-            X[i] = np.asarray(board, dtype=np.int8).reshape(9, 9)
-            Y[i] = val
-            i += 1
-
-        return X, Y
-
-
-# ============================================================
-# MODEL (RESIDUAL VALUE CNN)
-# ============================================================
-
-class ResidualBlock(nn.Module):
-    def __init__(self, c):
-        super().__init__()
-        self.c1 = nn.Conv2d(c, c, 3, padding=1)
-        self.c2 = nn.Conv2d(c, c, 3, padding=1)
-
-    def forward(self, x):
-        r = x
-        x = F.relu(self.c1(x))
-        x = self.c2(x)
-        return F.relu(x + r)
-
-
-class ValueCNN(nn.Module):
+class ModelA(nn.Module):
     def __init__(self):
         super().__init__()
-
-        # Input: (B,1,9,9)
-        self.inp = nn.Conv2d(1, 64, 3, padding=1)
-
-        # Deep reasoning trunk
-        self.res = nn.Sequential(*[ResidualBlock(64) for _ in range(8)])
-
-        # Value head
-        self.out = nn.Conv2d(64, 1, 1)
-        self.fc = nn.Linear(81, 1)
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 64, 3, padding=1),
+            act("relu"),
+            nn.Conv2d(64, 64, 3, padding=1),
+            act("relu"),
+            nn.Conv2d(64, 64, 3, padding=1),
+            act("relu"),
+            nn.Flatten(),
+            nn.Linear(64 * 9 * 9, 256),
+            act("relu"),
+            nn.Linear(256, 1)
+        )
 
     def forward(self, x):
-        x = F.relu(self.inp(x))
-        x = self.res(x)
-        x = self.out(x)
-        x = x.view(x.size(0), -1)
-        return self.fc(x).squeeze(1)
+        return self.net(x).squeeze(-1)
+
+
+class ModelB(nn.Module):
+    def __init__(self):
+        super().__init__()
+        layers = []
+        for _ in range(6):
+            layers.append(nn.Conv2d(1 if len(layers)==0 else 96, 96, 3, padding=1))
+            layers.append(act("gelu"))
+        self.conv = nn.Sequential(*layers)
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(96 * 9 * 9, 512),
+            act("gelu"),
+            nn.Linear(512, 1)
+        )
+
+    def forward(self, x):
+        x = self.conv(x)
+        return self.fc(x).squeeze(-1)
+
+
+class ModelC(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.stem = nn.Conv2d(1, 64, 3, padding=1)
+        self.blocks = nn.Sequential(*[
+            nn.Sequential(
+                nn.Conv2d(64, 64, 3, padding=1),
+                act("relu"),
+                nn.Conv2d(64, 64, 3, padding=1)
+            ) for _ in range(6)
+        ])
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64 * 9 * 9, 128),
+            act("relu"),
+            nn.Linear(128, 1)
+        )
+
+    def forward(self, x):
+        x = act("relu")(self.stem(x))
+        for block in self.blocks:
+            x = act("relu")(x + block(x))
+        return self.head(x).squeeze(-1)
+
+
+class ModelD(nn.Module):
+    # stride=3 to capture mini-boards
+    def __init__(self):
+        super().__init__()
+        self.mb = nn.Sequential(
+            nn.Conv2d(1, 64, 3, stride=3),
+            act("relu"),
+            nn.Conv2d(64, 64, 3, padding=1),
+            act("relu"),
+        )
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64 * 3 * 3, 128),
+            act("relu"),
+            nn.Linear(128, 1)
+        )
+
+    def forward(self, x):
+        x = self.mb(x)
+        return self.fc(x).squeeze(-1)
+
+
+class ModelE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(81, 512),
+            act("tanh"),
+            nn.Linear(512, 512),
+            act("tanh"),
+            nn.Linear(512, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x).squeeze(-1)
+
+
+def build_model(option):
+    if option == "A":
+        return ModelA()
+    if option == "B":
+        return ModelB()
+    if option == "C":
+        return ModelC()
+    if option == "D":
+        return ModelD()
+    if option == "E":
+        return ModelE()
+    raise ValueError("Unknown model option")
 
 
 # ============================================================
-# SAVE / LOAD
+# ======================== SAMPLER ============================
 # ============================================================
 
-MODEL_PATH = "cnn_value_model.pt"
+class LmdbSampler:
+    def __init__(self, cfg, game):
+        self.cfg = cfg
+        self.game = game
+        self.env = lmdb.open(cfg.lmdb_path, readonly=True, lock=False, subdir=False)
+        self.txn = self.env.begin()
+        self.cursor = self.txn.cursor()
+        self.unpack = struct.unpack
+        self.value_size = struct.calcsize("di")
 
-def load_or_create(device):
-    model = ValueCNN().to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=1e-4)
+    def sample_batch(self, batch_size):
+        X = np.zeros((batch_size, 1, 9, 9), dtype=np.float32)
+        y = np.zeros(batch_size, dtype=np.float32)
 
-    if os.path.exists(MODEL_PATH):
-        ckpt = torch.load(MODEL_PATH, map_location=device)
-        model.load_state_dict(ckpt["model"])
-        optim.load_state_dict(ckpt["optim"])
-        step = ckpt["step"]
-        samples = ckpt["samples"]
-        print(f"Resumed from step {step}, samples {samples}")
-    else:
-        step = 0
-        samples = 0
-        print("Starting fresh model")
+        accepted = 0
+        while accepted < batch_size:
+            if not self.cursor.next():
+                self.cursor.first()
 
-    return model, optim, step, samples
+            k = self.cursor.key()
+            v = self.cursor.value()
 
+            if len(v) != self.value_size:
+                continue
 
-def save(model, optim, step, samples):
-    torch.save(
-        {
-            "model": model.state_dict(),
-            "optim": optim.state_dict(),
-            "step": step,
-            "samples": samples,
-        },
-        MODEL_PATH,
-    )
+            q, visits = self.unpack("di", v)
+            if visits < self.cfg.min_count:
+                continue
+
+            state_int = int.from_bytes(k, "big", signed=False)
+            board = np.array(hashing.decode_board_from_int(state_int)).reshape(9, 9)
+
+            # ALWAYS apply random symmetry
+            syms = self.game.all_symmetries_fast(board)
+            board = syms[random.randrange(0, 8)]
+
+            X[accepted, 0] = board
+            y[accepted] = q
+            accepted += 1
+
+        return X, y
 
 
 # ============================================================
-# TRAINING WITH VERIFICATION
+# ============================ TRAIN ==========================
 # ============================================================
 
-def train(
-    lmdb="fixed_qtable.lmdb",
-    batch_size=1024,
-    total_steps=20_000,
-    log_every=100,
-    val_every=500,
-    val_batch=2048,
-):
-    device = get_device()
-    sampler = LMDBSampler(lmdb)
-    model, optim, step0, samples0 = load_or_create(device)
-    model.train()
+def train(cfg):
+    device = pick_device(cfg.prefer_cuda)
+    print("DEVICE:", device)
 
-    # ---- fixed validation batch ----
-    X_val, Y_val = sampler.sample_batch(val_batch)
-    X_val_t = torch.from_numpy(X_val).float().unsqueeze(1).to(device)
-    Y_val_t = torch.from_numpy(Y_val).float().to(device)
+    game = UltimateTicTacToeGame(q_table={}, training=False)
+    sampler = LmdbSampler(cfg, game)
 
-    samples_seen = samples0
-    start_time = time.time()
-    last_log = start_time
+    model = build_model(cfg.model_option).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
-    for step in range(step0 + 1, total_steps + 1):
-        X, Y = sampler.sample_batch(batch_size)
+    history = {"train_loss": [], "val_loss": []}
 
-        for i in range(batch_size):
-            X[i] = apply_uttt_symmetry(X[i], random.randrange(8))
+    Xv_np, yv_np = sampler.sample_batch(cfg.val_size)
+    Xv = torch.tensor(Xv_np).to(device)
+    yv = torch.tensor(yv_np).to(device)
 
-        X_t = torch.from_numpy(X).float().unsqueeze(1).to(device)
-        Y_t = torch.from_numpy(Y).float().to(device)
+    for step in range(1, cfg.steps + 1):
+        X_np, y_np = sampler.sample_batch(cfg.batch_size)
 
-        pred = model(X_t)
-        loss = F.mse_loss(pred, Y_t)
+        X = torch.tensor(X_np).to(device)
+        y = torch.tensor(y_np).to(device)
 
-        optim.zero_grad()
+        pred = model(X)
+        loss = F.mse_loss(pred, y)
+
+        optimizer.zero_grad()
         loss.backward()
-        optim.step()
+        optimizer.step()
 
-        samples_seen += batch_size
+        if step % cfg.log_every == 0:
+            print(f"[{step}] train_mse={loss.item():.6f}")
+            history["train_loss"].append(loss.item())
 
-        if step % log_every == 0:
-            dt = time.time() - last_log
-            sps = log_every / dt
-            print(
-                f"[step {step}/{total_steps}] "
-                f"train_loss={loss.item():.6f} | "
-                f"samples={samples_seen:,} | "
-                f"{sps:.2f} steps/s"
-            )
-            last_log = time.time()
-            save(model, optim, step, samples_seen)
-
-        if step % val_every == 0:
+        if step % cfg.val_every == 0:
             model.eval()
             with torch.no_grad():
-                pv = model(X_val_t)
-                mse = F.mse_loss(pv, Y_val_t).item()
-                corr = torch.corrcoef(torch.stack([pv, Y_val_t]))[0, 1].item()
+                val_pred = model(Xv)
+                val_loss = F.mse_loss(val_pred, yv).item()
+            print(f"    VAL mse={val_loss:.6f}")
+            history["val_loss"].append(val_loss)
             model.train()
-            print(f"   ↳ VALIDATION: mse={mse:.6f}, corr={corr:.4f}")
 
-    save(model, optim, total_steps, samples_seen)
-    print("Training finished.")
+    os.makedirs(cfg.out_dir, exist_ok=True)
 
+    model_path = os.path.join(cfg.out_dir, f"model_{cfg.model_option}.pt")
+    torch.save(model.state_dict(), model_path)
 
-# ============================================================
-# ENTRY
-# ============================================================
+    plt.plot(history["train_loss"])
+    plt.title("Train Loss")
+    plt.savefig(os.path.join(cfg.out_dir, f"train_loss_{cfg.model_option}.png"))
+    plt.close()
+
+    plt.plot(history["val_loss"])
+    plt.title("Validation Loss")
+    plt.savefig(os.path.join(cfg.out_dir, f"val_loss_{cfg.model_option}.png"))
+    plt.close()
+
+    print("Saved model to:", model_path)
+    print("Training complete.")
+
 
 if __name__ == "__main__":
-    train()
+    cfg = TrainConfig(model_option="A")
+    train(cfg)

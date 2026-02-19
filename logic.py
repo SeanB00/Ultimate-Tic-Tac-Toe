@@ -28,8 +28,8 @@ def init_worker(qtable):
 # The game logic
 class UltimateTicTacToeGame:
 
-
-    def __init__(self, q_table=None, training=False, multiprocess=False):
+    #Training tells if we epsilon-greedy or run regularly, multiprocess if we update the table inside or outside the class
+    def __init__(self, q_table=None, training=False, multiprocess=False, random=True):
         # Board representations
         self.board_rep = np.zeros((9, 9), dtype=int)         # global 9x9
         self.full_board = np.zeros((3, 3, 3, 3), dtype=int)  # 3x3 subboards of 3x3
@@ -38,7 +38,7 @@ class UltimateTicTacToeGame:
         # Symbols
         self.player_symbol = -1
         self.agent_symbol = 1
-
+        self.random = random
         # Counters
         self.num_plays = 0       # total agent moves
         self.random_plays = 0    # times we FALL BACK to random (no Q info / forced random)
@@ -63,7 +63,7 @@ class UltimateTicTacToeGame:
         self.multiprocess = multiprocess
 
         # discount factor
-        self.gamma = 0.9
+        self.gamma = 0.97
 
         # (state_int, target_value) accumulated during game
         self.board_score_list = []
@@ -226,6 +226,77 @@ class UltimateTicTacToeGame:
 
         r, c = random.choice(tuple(self.empty_places[bi][bj]))
 
+        self.apply_player_move(bi, bj, r, c)
+
+
+    def player_smart_move(self):
+        """
+        Smart opponent move logic (uses generalized blocking helpers):
+
+        PRIORITY:
+        1) Immediate META win
+        2) Block agent META win
+        3) Immediate LOCAL subboard win
+        4) Block agent LOCAL subboard win
+        5) Random fallback
+        """
+
+        # ------------------------------------------------------------
+        # Determine playable boards
+        # ------------------------------------------------------------
+        if self.curr_board is None:
+            playable = self.empty_sub_places
+        else:
+            playable = (
+                {self.curr_board}
+                if self.curr_board in self.empty_sub_places
+                else self.empty_sub_places
+            )
+
+        all_moves = [
+            (bi, bj, r, c)
+            for (bi, bj) in playable
+            for (r, c) in self.empty_places[bi][bj]
+        ]
+
+        # ------------------------------------------------------------
+        # 1) META WIN (player)
+        # ------------------------------------------------------------
+        win = self.find_winning_move(symbol=self.player_symbol)
+        if win is not None:
+            self.apply_player_move(*win)
+            return
+
+        # ------------------------------------------------------------
+        # 2) META BLOCK (block agent)
+        # ------------------------------------------------------------
+        meta_threats = self.find_meta_block(opp=self.agent_symbol)
+
+        for (bi, bj) in meta_threats:
+            if (bi, bj) in playable:
+                blocks = self.find_immidiate_danger(bi, bj, opp=self.agent_symbol)
+                if blocks:
+                    r, c = random.choice(blocks)
+                    self.apply_player_move(bi, bj, r, c)
+                    return
+
+        # ------------------------------------------------------------
+        # 3) LOCAL WIN
+        # ------------------------------------------------------------
+        for bi, bj, r, c in all_moves:
+            if self._wins_sub(self.full_board[bi][bj], self.player_symbol, r, c):
+                self.apply_player_move(bi, bj, r, c)
+                return
+
+
+
+        # ------------------------------------------------------------
+        # 5) RANDOM
+        # ------------------------------------------------------------
+        bi, bj, r, c = random.choice(all_moves)
+        self.apply_player_move(bi, bj, r, c)
+
+    def apply_player_move(self, bi, bj, r, c):
         self.full_board[bi][bj][r][c] = self.player_symbol
         self.place_in_rep(bi, bj, r, c, self.player_symbol)
         self.empty_places[bi][bj].remove((r, c))
@@ -478,13 +549,14 @@ class UltimateTicTacToeGame:
 
         return best
 
-    def find_meta_block(self):
+    def find_meta_block(self, opp = None):
         """
         Find meta-board positions (subboards) where opponent is
         threatening to win on the meta board (i.e., 2 in a line).
         Returns a list of (bi, bj) subboard indices.
         """
-        opp = self.player_symbol
+        if opp is None:
+            opp = self.player_symbol
         sb = self.sub_boards
         threats = set()
 
@@ -519,13 +591,14 @@ class UltimateTicTacToeGame:
 
         return list(threats)
 
-    def find_immidiate_danger(self, bi, bj):
+    def find_immidiate_danger(self, bi, bj, opp = None):
         """
         For a given subboard (bi, bj), find cells that block an immediate
         win (2 in a row) for the opponent. Returns list of (r, c).
         """
         sb = self.full_board[bi][bj]
-        opp = self.player_symbol
+        if opp is None:
+            opp = self.player_symbol
         dangers = []
 
         # rows
@@ -562,11 +635,14 @@ class UltimateTicTacToeGame:
     # ------------------------------------------------------------
     # Winning move finder (meta win)
     # ------------------------------------------------------------
-    def find_winning_move(self):
+    def find_winning_move(self, symbol=None):
         """
         Search all legal moves; return (bi, bj, r, c) that produce
         an immediate meta-board win if it exists, else None.
         """
+
+        if symbol is None:
+            symbol = self.agent_symbol
         if self.curr_board is None:
             boards = self.empty_sub_places
         else:
@@ -581,9 +657,9 @@ class UltimateTicTacToeGame:
             meta_copy = self.sub_boards.copy()
 
             for (r, c) in self.empty_places[bi][bj]:
-                if self._wins_sub(sb, self.agent_symbol, r, c):
-                    meta_copy[bi][bj] = self.agent_symbol
-                    if self._wins_meta(meta_copy, bi, bj, self.agent_symbol):
+                if self._wins_sub(sb, symbol, r, c):
+                    meta_copy[bi][bj] = symbol
+                    if self._wins_meta(meta_copy, bi, bj, symbol):
                         return bi, bj, r, c
 
         return None
@@ -732,7 +808,7 @@ class UltimateTicTacToeGame:
     # ------------------------------------------------------------
     # Game loop
     # ------------------------------------------------------------
-    def play_one_game(self, epsilon=1.0, training=None):
+    def play_one_game(self, epsilon=1.0, training=None, random=None):
         """
         Plays one game:
         - Agent plays with epsilon-greedy if training=True,
@@ -746,6 +822,10 @@ class UltimateTicTacToeGame:
         """
         if training is None:
             training = self.training
+
+        if random is None:
+            random = self.random
+
 
         self.init_game()
         states = []
@@ -767,7 +847,10 @@ class UltimateTicTacToeGame:
                 break
 
             # Opponent random move
-            self.player_random_move()
+            if random:
+                self.player_random_move()
+            else:
+                self.player_smart_move()
             states.append(self.get_board_int())
 
         winner = self.check_true_win()
@@ -1026,7 +1109,7 @@ if __name__ == "__main__":
     start_time = time.time()
     # 1) TRAIN
     games = Games(
-    num_games=500_000,     # increase this for stronger agent
+    num_games=100_000,     # increase this for stronger agent
     processes=cores,
     log_every=10_000,
     chunk_size=100

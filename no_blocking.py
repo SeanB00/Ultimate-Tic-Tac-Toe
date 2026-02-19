@@ -76,6 +76,7 @@ def run_q_only_eval(num_games=2000):
     start = time.time()
 
     for i in range(1, num_games + 1):
+
         game.play_one_game(training=False, epsilon=0.0)
 
         w = game.check_true_win()

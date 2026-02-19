@@ -8,7 +8,8 @@ qtable.lmdb
 backup_qtable.lmdb
 fixed_qtable.lmdb
 fixed_qtable.lmdb-lock
-
+qtable_shrink.lmdb
+venv/
 # Virtual environment
 .venv/
 
