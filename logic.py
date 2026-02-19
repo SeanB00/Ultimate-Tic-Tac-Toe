@@ -1107,27 +1107,27 @@ class Games:
 if __name__ == "__main__":
     cores = multiprocessing.cpu_count()
     start_time = time.time()
-    # 1) TRAIN
-    games = Games(
-    num_games=100_000,     # increase this for stronger agent
-    processes=cores,
-    log_every=10_000,
-    chunk_size=100
-    )
-
-    games.multi_process_train()
-
-    print("TRAINING DONE")
-    print("Agent win %:", 100 * games.agent_wins / games.num_games)
-    print("Player win %:", 100 * games.player_wins / games.num_games)
-    print("Tie %:", 100 * games.ties / games.num_games)
-
-    #Save resulting Q-table (already a normal dict)
-    #hashing.save_qtable("q.pkl", games.game.q_table)
-
-    # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
-    print("Linux training done")
-    shrinker.refresh()
+    # # 1) TRAIN
+    # games = Games(
+    # num_games=100_000,     # increase this for stronger agent
+    # processes=cores,
+    # log_every=10_000,
+    # chunk_size=100
+    # )
+    #
+    # games.multi_process_train()
+    #
+    # print("TRAINING DONE")
+    # print("Agent win %:", 100 * games.agent_wins / games.num_games)
+    # print("Player win %:", 100 * games.player_wins / games.num_games)
+    # print("Tie %:", 100 * games.ties / games.num_games)
+    #
+    # #Save resulting Q-table (already a normal dict)
+    # #hashing.save_qtable("q.pkl", games.game.q_table)
+    #
+    # # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
+    # print("Linux training done")
+    # shrinker.refresh()
 
 
 

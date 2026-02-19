@@ -1,3 +1,7 @@
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 from kivy.app import App
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.boxlayout import BoxLayout
@@ -258,7 +262,7 @@ class UTTTApp(App):
             self.game = UltimateTicTacToeCNN(
                 model=model,
                 device=device,
-                mode="local_priority",
+                mode="meta_only",
                 q_table={},
                 training=False,
                 multiprocess=False,

@@ -1,5 +1,11 @@
-# cnn_play_test.py
+# CNN_utils.py
+# (CNN play/eval utilities + Kivy integration)
+
+# --- OpenMP duplicate runtime workaround (Windows + torch/numpy/mkl)
 import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import random
 import numpy as np
 import torch
@@ -14,10 +20,7 @@ from CNN import build_model, pick_device, TrainConfig
 # ============================================================
 
 class UltimateTicTacToeCNN(UltimateTicTacToeGame):
-    """
-    Subclass that chooses agent moves based on a trained CNN value function.
-    We override agent move selection only; the rest stays identical.
-    """
+    """Subclass that chooses agent moves based on a trained CNN value function."""
 
     def __init__(self, model: nn.Module, device: torch.device, mode: str, **kwargs):
         super().__init__(**kwargs)
@@ -27,11 +30,17 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
         self.model.eval()
 
     # -----------------------------
-    # Board -> tensor (1 channel)
+    # Board -> tensor (3 channels)
     # -----------------------------
     def _board_to_tensor(self, board9x9: np.ndarray) -> torch.Tensor:
-        # shape (1,1,9,9)
-        x = torch.from_numpy(board9x9.astype(np.float32))[None, None, :, :]
+        # board9x9 is your {-1,0,1} representation.
+        board = board9x9.astype(np.int8)
+        x_plane = (board == 1).astype(np.float32)
+        o_plane = (board == -1).astype(np.float32)
+        e_plane = (board == 0).astype(np.float32)
+
+        x = np.stack([x_plane, o_plane, e_plane], axis=0)  # (3,9,9)
+        x = torch.from_numpy(x)[None, :, :, :]             # (1,3,9,9)
         return x.to(self.device)
 
     @torch.no_grad()
@@ -63,26 +72,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
     # Agent move selection (3 modes)
     # -----------------------------
     def agent_smart_move(self):
-        """
-        Three play styles:
-
-        1) mode="meta_only":
-            - meta win move if exists
-            - meta block if threatened
-            - then CNN choose among legal moves
-            - IMPORTANT: does NOT do local mini-board win/block logic
-
-        2) mode="pure_cnn":
-            - no heuristics at all
-            - CNN chooses among all legal moves
-
-        3) mode="local_priority":
-            - meta win if exists
-            - meta block if threatened
-            - local immediate win (subboard win) priority
-            - local block priority
-            - then CNN among remaining
-        """
+        """Same as your current file, just uses 3ch value net now."""
 
         # playable boards
         if self.curr_board is None:
@@ -104,28 +94,24 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
         if self.mode == "pure_cnn":
             best = self.cnn_best_move(all_moves)
             if best is None:
-                # fallback random
                 self.random_plays += 1
                 best = random.choice(all_moves)
             self.apply_agent_move(*best)
             return True
 
         # ------------------ META WIN ------------------
-        win = self.find_winning_move()  # your meta win finder (agent_symbol)
+        win = self.find_winning_move()
         if win is not None:
             self.apply_agent_move(*win)
             return True
 
         # ------------------ META BLOCK ----------------
-        # Use your find_meta_block (blocks player_symbol threats)
         threats = self.find_meta_block()
         if threats:
             blocking = []
-            # For each threatened board, block immediate local win there (same as your logic)
             for (bi, bj) in threats:
                 dangers = self.find_immidiate_danger(bi, bj)
                 for (r, c) in dangers:
-                    # only if still legal
                     if (r, c) in self.empty_places[bi][bj]:
                         blocking.append((bi, bj, r, c))
             if blocking:
@@ -161,19 +147,6 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
                 self.apply_agent_move(*best)
                 return True
 
-            # 2) Local block (block player immediate win)
-            blocking_moves = []
-            for bi, bj, r, c in all_moves:
-                sb = self.full_board[bi][bj]
-                if self._wins_sub(sb, self.player_symbol, r, c):
-                    blocking_moves.append((bi, bj, r, c))
-            if blocking_moves:
-                best = self.cnn_best_move(blocking_moves)
-                if best is None:
-                    self.random_plays += 1
-                    best = random.choice(blocking_moves)
-                self.apply_agent_move(*best)
-                return True
 
             # 3) Otherwise CNN on all moves
             best = self.cnn_best_move(all_moves)
@@ -193,12 +166,48 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
 
 
 # ============================================================
-# =================== EVALUATION HARNESS =====================
+# MODEL LOADER (NEW CHECKPOINT FORMAT)
 # ============================================================
 
-def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int = 2000, seed: int = 123):
-    random.seed(seed)
-    np.random.seed(seed)
+def load_model(run_dir: str, model_option: str):
+    device = pick_device(True)
+    print(">>> DEVICE:", device)
+
+    model = build_model(model_option)
+    path = f"{run_dir}/model_{model_option}.pt"
+
+    print(">>> Loading model from:", path)
+    obj = torch.load(path, map_location=device)
+
+    # Backwards/forwards compatible:
+    # - new format: {model_state, optimizer_state, step, history}
+    # - older format (your old script): {model, optim, step}
+    # - oldest format: raw state_dict
+    if isinstance(obj, dict) and "model_state" in obj:
+        model.load_state_dict(obj["model_state"])
+        step = obj.get("step", None)
+        if step is not None:
+            print(">>> Loaded checkpoint step:", step)
+    elif isinstance(obj, dict) and "model" in obj:
+        model.load_state_dict(obj["model"])
+        step = obj.get("step", None)
+        if step is not None:
+            print(">>> Loaded checkpoint step:", step)
+    else:
+        model.load_state_dict(obj)
+
+    model.to(device)
+    model.eval()
+
+    return model, device
+
+
+# ============================================================
+# OPTIONAL: QUICK EVAL HARNESS (kept from your file)
+# ============================================================
+
+def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int = 2000):
+
 
     agent_w = 0
     player_w = 0
@@ -208,13 +217,18 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
         model=model,
         device=device,
         mode=mode,
-        q_table={},          # not using Q-table in this player
+        q_table={},
         training=False,
         multiprocess=False,
+        random=True
     )
 
+
+
     for _ in range(n_games):
-        game.play_one_game(training=False, epsilon=0.0)  # uses our overridden agent_smart_move
+        if _%50==0:
+            print(_)
+        game.play_one_game(training=False, epsilon=0.0)
         w = game.check_true_win()
         if w == 1:
             agent_w += 1
@@ -228,42 +242,20 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
     print(f"Agent win % : {100.0 * agent_w / total:.2f}")
     print(f"Player win %: {100.0 * player_w / total:.2f}")
     print(f"Tie %      : {100.0 * ties / total:.2f}")
-    if game.num_plays > 0:
+    if getattr(game, "num_plays", 0) > 0:
         print(f"Fallback random % (if any): {100.0 * game.random_plays / game.num_plays:.3f}")
     else:
         print("No moves tracked.")
+
     return agent_w, player_w, ties
 
 
-def load_model(run_dir, model_option):
-    device = pick_device(True)
-    print("DEVICE:", device)
-
-    model = build_model(model_option)
-    path = f"{run_dir}/model_{model_option}.pt"
-
-    print("Loading model from:", path)
-    model.load_state_dict(torch.load(path, map_location=device))
-    model.to(device)
-    model.eval()
-
-    return model, device
-
-
-
 if __name__ == "__main__":
-    # Example:
-    # After training, run:
-    #   python cnn_play_test.py
-    #
-    # Make sure run_dir + model_option matches what you trained.
-
-    run_dir = TrainConfig.out_dir  # folder created by cnn_train.py
-    model_option = "A"                     # A/B/C/D/E
+    run_dir = TrainConfig.out_dir
+    model_option = "A"
 
     model, device = load_model(run_dir, model_option)
 
-    # 3 play styles:
-    play_games(model, device, mode="meta_only", n_games=2000, seed=1)
-    play_games(model, device, mode="pure_cnn", n_games=2000, seed=2)
-    play_games(model, device, mode="local_priority", n_games=2000, seed=3)
+    play_games(model, device, mode="meta_only", n_games=1000)
+    play_games(model, device, mode="pure_cnn", n_games=1000)
+    play_games(model, device, mode="local_priority", n_games=1000)

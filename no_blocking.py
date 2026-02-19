@@ -67,6 +67,7 @@ def run_q_only_eval(num_games=2000):
         q_table=qtable,
         training=False,
         multiprocess=False,
+        random=False
     )
 
     agent_wins = 0
@@ -110,4 +111,4 @@ def run_q_only_eval(num_games=2000):
 
 
 if __name__ == "__main__":
-    run_q_only_eval(num_games=200)
+    run_q_only_eval(num_games=100)

@@ -3,7 +3,7 @@ import os
 import pickle
 import time
 
-STATE_BYTES = 17  # 129 bits = 17 bytes, needed for 3^81 game states
+
 
 def encode_board_to_int(board):
 
