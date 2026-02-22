@@ -26,32 +26,33 @@ class QOnlyUltimateTicTacToe(UltimateTicTacToeGame):
             )
 
         # collect all legal moves
+
         moves = [
             (bi, bj, r, c)
             for (bi, bj) in playable
             for (r, c) in self.empty_places[bi][bj]
         ]
 
-        best_move = None
-        best_score = -1e18
-
-        for bi, bj, r, c in moves:
-            # simulate move
-            self.place_in_rep(bi, bj, r, c, self.agent_symbol)
-            b_int = self.get_board_int()
-            self.place_in_rep(bi, bj, r, c, 0)
-
-            if b_int in self.q_table:
-                val, _ = self.q_table[b_int]
-                if val > best_score:
-                    best_score = val
-                    best_move = (bi, bj, r, c)
-
-        # apply best Q move if exists
-        if best_move is not None:
-            self.apply_agent_move(*best_move)
-            self.num_plays += 1
-            return True
+        # best_move = None
+        # best_score = -1e18
+        #
+        # for bi, bj, r, c in moves:
+        #     # simulate move
+        #     self.place_in_rep(bi, bj, r, c, self.agent_symbol)
+        #     b_int = self.get_board_int()
+        #     self.place_in_rep(bi, bj, r, c, 0)
+        #
+        #     if b_int in self.q_table:
+        #         val, _ = self.q_table[b_int]
+        #         if val > best_score:
+        #             best_score = val
+        #             best_move = (bi, bj, r, c)
+        #
+        # # apply best Q move if exists
+        # if best_move is not None:
+        #     self.apply_agent_move(*best_move)
+        #     self.num_plays += 1
+        #  return True
 
         # fallback: random legal move
         self.random_plays += 1
@@ -67,7 +68,7 @@ def run_q_only_eval(num_games=2000):
         q_table=qtable,
         training=False,
         multiprocess=False,
-        random=False
+        random=True
     )
 
     agent_wins = 0

@@ -262,7 +262,7 @@ class UTTTApp(App):
             self.game = UltimateTicTacToeCNN(
                 model=model,
                 device=device,
-                mode="meta_only",
+                mode="pure_cnn",  #meta_only, pure_cnn, local_priority
                 q_table={},
                 training=False,
                 multiprocess=False,

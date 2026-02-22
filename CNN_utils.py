@@ -52,7 +52,8 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
     # -----------------------------
     # CNN-based best move
     # -----------------------------
-    def cnn_best_move(self, moves):
+    def best_from_moves(self, moves):
+
         best = None
         best_score = -1e30
 
@@ -71,8 +72,12 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
     # -----------------------------
     # Agent move selection (3 modes)
     # -----------------------------
+
     def agent_smart_move(self):
         """Same as your current file, just uses 3ch value net now."""
+
+        if self.mode == "heuristic":
+            super().agent_smart_move()
 
         # playable boards
         if self.curr_board is None:
@@ -115,7 +120,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
                     if (r, c) in self.empty_places[bi][bj]:
                         blocking.append((bi, bj, r, c))
             if blocking:
-                best = self.cnn_best_move(blocking)
+                best = self.best_from_moves(blocking)
                 if best is None:
                     self.random_plays += 1
                     best = random.choice(blocking)
@@ -124,7 +129,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
 
         # ------------------ META ONLY MODE -------------
         if self.mode == "meta_only":
-            best = self.cnn_best_move(all_moves)
+            best = self.best_from_moves(all_moves)
             if best is None:
                 self.random_plays += 1
                 best = random.choice(all_moves)
@@ -140,7 +145,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
                 if self._wins_sub(sb, self.agent_symbol, r, c):
                     winning_moves.append((bi, bj, r, c))
             if winning_moves:
-                best = self.cnn_best_move(winning_moves)
+                best = self.best_from_moves(winning_moves)
                 if best is None:
                     self.random_plays += 1
                     best = random.choice(winning_moves)
@@ -149,7 +154,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
 
 
             # 3) Otherwise CNN on all moves
-            best = self.cnn_best_move(all_moves)
+            best = self.best_from_moves(all_moves)
             if best is None:
                 self.random_plays += 1
                 best = random.choice(all_moves)
@@ -157,7 +162,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
             return True
 
         # fallback
-        best = self.cnn_best_move(all_moves)
+        best = self.best_from_moves(all_moves)
         if best is None:
             self.random_plays += 1
             best = random.choice(all_moves)
@@ -220,7 +225,7 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
         q_table={},
         training=False,
         multiprocess=False,
-        random=True
+        random=False
     )
 
 
@@ -252,10 +257,15 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
 
 if __name__ == "__main__":
     run_dir = TrainConfig.out_dir
-    model_option = "A"
 
-    model, device = load_model(run_dir, model_option)
 
-    play_games(model, device, mode="meta_only", n_games=1000)
-    play_games(model, device, mode="pure_cnn", n_games=1000)
-    play_games(model, device, mode="local_priority", n_games=1000)
+    #play_games(model, device, mode="meta_only", n_games=1000)
+
+
+    for model_option in ["A","B","C","D","E"]:
+
+        model, device = load_model(run_dir, model_option)
+
+        play_games(model, device, mode="heuristic", n_games=400)
+
+    #play_games(model, device, mode="local_priority", n_games=1000)

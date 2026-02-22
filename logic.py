@@ -489,7 +489,7 @@ class UltimateTicTacToeGame:
 
         # 1️⃣ PRIORITY: Subboard-winning moves
         if winning_moves:
-            best = self.q_best(winning_moves)
+            best = self.best_from_moves(winning_moves)
             if best is not None:
                 return best, True
             # No Q-values among winning moves
@@ -506,7 +506,7 @@ class UltimateTicTacToeGame:
         ]
 
         if critical_moves:
-            best = self.q_best(critical_moves)
+            best = self.best_from_moves(critical_moves)
             if best is not None:
                 return best, True
             # No Q-values among critical moves → fallback random among them
@@ -514,7 +514,7 @@ class UltimateTicTacToeGame:
             return random.choice(critical_moves), False
 
 
-        best = self.q_best(moves)
+        best = self.best_from_moves(moves)
         if best is not None:
             return best, True
 
@@ -525,7 +525,7 @@ class UltimateTicTacToeGame:
     # ------------------------------------------------------------
     # Threat detection for meta and subboards
     # ------------------------------------------------------------
-    def q_best(self, move_list):
+    def best_from_moves(self, move_list):
         """
         Among the given moves, pick the one whose resulting board
         has the highest Q-value. Returns None if no successor state
