@@ -31,13 +31,14 @@ VALUE_SIZE = struct.calcsize(VALUE_FMT)
 # (Used in inspect_lmdb filtering in your original file)
 # Minimum number of non-empty cells threshold used to decide "effective entries".
 NUM_PLAYS = 10
+MIN_VISITS = 2
 
 # Print progress during full LMDB scan every N scanned entries.
 PROGRESS_EVERY = 500_000
 
 # Stop scanning after this many entries (for speed on huge DB).
 # Set to None if you want to scan everything (not recommended on 150M states).
-MAX_ENTRIES = 1_000_000
+MAX_ENTRIES = None
 
 # How many boards to keep for running the data tests (reservoir sampling).
 SAMPLE_SIZE = 1_000_000
@@ -352,7 +353,7 @@ def inspect_lmdb(path):
 
     bad_key_len = 0
     bad_val_len = 0
-
+    valid = 0
     start = time.time()
     unpack = struct.unpack
 
@@ -407,6 +408,10 @@ def inspect_lmdb(path):
                     max_visit_key = k
                     max_visit_q = q
 
+
+            if visits >= MIN_VISITS:
+                valid += 1
+
             sum_q += q
             min_q = min(min_q, q)
             max_q = max(max_q, q)
@@ -421,6 +426,7 @@ def inspect_lmdb(path):
     print("\n===== SUMMARY =====")
     print(f"Total entries        : {entries}")
     print(f"Effective entries    : {used_entries}")
+    print(f"Usable entries:      : {valid}")
     print(f"Bad key length       : {bad_key_len}")
     print(f"Bad value length     : {bad_val_len}")
     print()
@@ -474,4 +480,4 @@ def print_ultimate_board(board):
 if __name__ == "__main__":
     # Quick DB stats + sample suite
     inspect_lmdb(LMDB_PATH)
-    run_inspection_suite(LMDB_PATH)
+    #run_inspection_suite(LMDB_PATH)

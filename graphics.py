@@ -15,7 +15,7 @@ import torch
 
 from logic import UltimateTicTacToeGame
 from CNN_utils import UltimateTicTacToeCNN, load_model
-from CNN import TrainConfig
+from CNN import OUT_DIR
 
 
 # =====================================================
@@ -256,13 +256,13 @@ class UTTTApp(App):
             self.game = UltimateTicTacToeGame()
         else:
             model_option = "A"
-            run_dir = TrainConfig.out_dir
+            run_dir = OUT_DIR
             model, device = load_model(run_dir, model_option)
 
             self.game = UltimateTicTacToeCNN(
                 model=model,
                 device=device,
-                mode="pure_cnn",  #meta_only, pure_cnn, local_priority
+                mode="meta_only",  #meta_only, pure_cnn, local_priority, heuristic
                 q_table={},
                 training=False,
                 multiprocess=False,

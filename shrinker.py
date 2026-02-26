@@ -14,6 +14,6 @@ def refresh(src="fixed_qtable.lmdb", dst="qtable_shrink.lmdb"):
     except FileNotFoundError:
         print("File not found.")
 if __name__ == "__main__":
-    refresh("backup_qtable.lmdb")
+    refresh("fixed_qtable.lmdb")
 
 

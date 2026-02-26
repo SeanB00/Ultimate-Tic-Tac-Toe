@@ -35,31 +35,29 @@ from logic import UltimateTicTacToeGame
 
 
 # ============================================================
-# CONFIG
+# CONFIG (global variables instead of TrainConfig)
 # ============================================================
 
-@dataclass
-class TrainConfig:
-    lmdb_path: str = "fixed_qtable.lmdb"
+LMDB_PATH = "fixed_qtable.lmdb"
 
-    batch_size: int = 1024
-    val_size: int = 2048
-    steps: int = 50_000
-    lr: float = 1e-4
+BATCH_SIZE = 1024
+VAL_SIZE = 2048
+STEPS = 50_000
+LR = 1e-4
 
-    log_every: int = 100
-    val_every: int = 500
-    save_every: int = 1000
+LOG_EVERY = 100
+VAL_EVERY = 500
+SAVE_EVERY = 1000
 
-    out_dir: str = "cnn_runs"
-    model_option: str = "A"   # A / B / C / D / E
+OUT_DIR = "cnn_runs"
+MODEL_OPTION = "A"  # A / B / C / D / E
 
-    min_count: int = 1
+MIN_COUNT = 1
 
-    # random LMDB sampling: how many key bits are actually used
-    key_bits: int = 129
+# random LMDB sampling: how many key bits are actually used
+KEY_BITS = 129
 
-    prefer_cuda: bool = True
+PREFER_CUDA = True
 
 
 # ============================================================
@@ -88,42 +86,69 @@ def act(name: str):
         return nn.LeakyReLU(0.1, inplace=True)
     if name == "tanh":
         return nn.Tanh()
+    if name == "silu" or name == "swish":
+        return nn.SiLU(inplace=True)
+    if name == "mish":
+        # no inplace for Mish in some torch versions
+        return nn.Mish()
+    if name == "elu":
+        return nn.ELU(inplace=True)
+    if name == "selu":
+        return nn.SELU(inplace=True)
+    if name == "prelu":
+        return nn.PReLU()
+    if name == "hardswish":
+        return nn.Hardswish()
+    if name == "softplus":
+        return nn.Softplus()
     raise ValueError(f"Unknown activation: {name}")
 
 
 class ModelA(nn.Module):
-    def __init__(self, in_ch: int = 3):
+    def __init__(self, in_ch: int = 1):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, 64, 3, padding=1),
-            act("relu"),
-            nn.Conv2d(64, 64, 3, padding=1),
-            act("relu"),
-            nn.Conv2d(64, 64, 3, padding=1),
-            act("relu"),
+        # Stronger CNN: 3 conv blocks + bigger FC head
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, 64, 3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            act("silu"),
+            nn.Conv2d(64, 128, 3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            act("mish"),
+            nn.Conv2d(128, 128, 3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            act("silu"),
+        )
+        self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64 * 9 * 9, 256),
-            act("relu"),
-            nn.Linear(256, 1),
+            nn.Linear(128 * 9 * 9, 512),
+            act("gelu"),
+            nn.Linear(512, 128),
+            act("prelu"),
+            nn.Linear(128, 1),
+            act("tanh"),  # output in [-1, 1]
         )
 
     def forward(self, x):
-        return self.net(x).squeeze(-1)
+        x = self.conv(x)
+        return self.fc(x).squeeze(-1)
 
 
 class ModelB(nn.Module):
-    def __init__(self, in_ch: int = 3):
+    def __init__(self, in_ch: int = 1):
         super().__init__()
-        layers = []
-        for i in range(6):
-            layers.append(nn.Conv2d(in_ch if i == 0 else 96, 96, 3, padding=1))
-            layers.append(act("gelu"))
-        self.conv = nn.Sequential(*layers)
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, 64, 3, padding=1),  # single conv, 64 filters
+            act("gelu"),
+        )
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(96 * 9 * 9, 512),
+            nn.Linear(64 * 9 * 9, 256),
+            act("relu"),
+            nn.Linear(256, 64),
             act("gelu"),
-            nn.Linear(512, 1),
+            nn.Linear(64, 1),
+            act("tanh"),
         )
 
     def forward(self, x):
@@ -132,47 +157,49 @@ class ModelB(nn.Module):
 
 
 class ModelC(nn.Module):
-    def __init__(self, in_ch: int = 3):
+    def __init__(self, in_ch: int = 1):
         super().__init__()
-        self.stem = nn.Conv2d(in_ch, 64, 3, padding=1)
-        self.blocks = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(64, 64, 3, padding=1),
-                act("relu"),
-                nn.Conv2d(64, 64, 3, padding=1),
-            )
-            for _ in range(6)
-        ])
-        self.head = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(64 * 9 * 9, 128),
-            act("relu"),
-            nn.Linear(128, 1),
-        )
-
-    def forward(self, x):
-        x = act("relu")(self.stem(x))
-        for blk in self.blocks:
-            x = act("relu")(x + blk(x))
-        return self.head(x).squeeze(-1)
-
-
-class ModelD(nn.Module):
-    """Stride=3 model to capture each 3x3 mini-board as a "patch"."""
-
-    def __init__(self, in_ch: int = 3):
-        super().__init__()
-        self.mb = nn.Sequential(
-            nn.Conv2d(in_ch, 64, 3, stride=3),
-            act("relu"),
-            nn.Conv2d(64, 64, 3, padding=1),
+        # Two conv layers, moderate width
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, 96, 3, padding=1, bias=False),
+            nn.BatchNorm2d(96),
+            act("elu"),
+            nn.Conv2d(96, 192, 3, padding=1, bias=False),
+            nn.BatchNorm2d(192),
             act("relu"),
         )
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64 * 3 * 3, 128),
+            nn.Linear(192 * 9 * 9, 256),
+            act("gelu"),
+            nn.Linear(256, 64),
+            act("hardswish"),
+            nn.Linear(64, 1),
+            act("tanh"),
+        )
+
+    def forward(self, x):
+        x = self.conv(x)
+        return self.fc(x).squeeze(-1)
+
+
+class ModelD(nn.Module):
+    """Stride=3 model to capture each 3x3 mini-board as a "patch" with a single conv."""
+
+    def __init__(self, in_ch: int = 1):
+        super().__init__()
+        self.mb = nn.Sequential(
+            nn.Conv2d(in_ch, 128, 3, stride=3),  # single conv, 128 filters
             act("relu"),
-            nn.Linear(128, 1),
+        )
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128 * 3 * 3, 256),
+            act("gelu"),
+            nn.Linear(256, 64),
+            act("relu"),
+            nn.Linear(64, 1),
+            act("tanh"),
         )
 
     def forward(self, x):
@@ -181,35 +208,45 @@ class ModelD(nn.Module):
 
 
 class ModelE(nn.Module):
-    """Pure MLP baseline."""
+    """Small multi-conv + FC head (freestyle)."""
 
-    def __init__(self, in_ch: int = 3):
+    def __init__(self, in_ch: int = 1):
         super().__init__()
-        self.net = nn.Sequential(
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, 48, 3, padding=1, bias=False),
+            nn.BatchNorm2d(48),
+            act("relu"),
+            nn.Conv2d(48, 96, 3, padding=1, bias=False),
+            nn.BatchNorm2d(96),
+            act("silu"),
+        )
+        self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(81 * in_ch, 512),
+            nn.Linear(96 * 9 * 9, 128),
+            act("softplus"),
+            nn.Linear(128, 64),
+            act("relu"),
+            nn.Linear(64, 1),
             act("tanh"),
-            nn.Linear(512, 512),
-            act("tanh"),
-            nn.Linear(512, 1),
         )
 
     def forward(self, x):
-        return self.net(x).squeeze(-1)
+        x = self.conv(x)
+        return self.fc(x).squeeze(-1)
 
 
 def build_model(option: str) -> nn.Module:
     option = option.upper()
     if option == "A":
-        return ModelA(in_ch=3)
+        return ModelA(in_ch=1)
     if option == "B":
-        return ModelB(in_ch=3)
+        return ModelB(in_ch=1)
     if option == "C":
-        return ModelC(in_ch=3)
+        return ModelC(in_ch=1)
     if option == "D":
-        return ModelD(in_ch=3)
+        return ModelD(in_ch=1)
     if option == "E":
-        return ModelE(in_ch=3)
+        return ModelE(in_ch=1)
     raise ValueError("Unknown model option")
 
 
@@ -218,12 +255,11 @@ def build_model(option: str) -> nn.Module:
 # ============================================================
 
 class LmdbSampler:
-    def __init__(self, cfg: TrainConfig, game: UltimateTicTacToeGame):
-        self.cfg = cfg
+    def __init__(self, game: UltimateTicTacToeGame):
         self.game = game
 
         # readonly=True + lock=False is typical for pure reading
-        self.env = lmdb.open(cfg.lmdb_path, readonly=True, lock=False, subdir=False, readahead=True)
+        self.env = lmdb.open(LMDB_PATH, readonly=True, lock=False, subdir=False, readahead=True)
         self.txn = self.env.begin(write=False)
         self.cursor = self.txn.cursor()
 
@@ -236,13 +272,13 @@ class LmdbSampler:
 
     def _random_seek(self):
         # sample within correct keyspace, seek to nearest key
-        r = random.getrandbits(self.cfg.key_bits)
+        r = random.getrandbits(KEY_BITS)
         key = r.to_bytes(self.key_len, "big", signed=False)
         if not self.cursor.set_range(key):
             self.cursor.first()
 
     def sample_batch(self, batch_size: int):
-        X = np.empty((batch_size, 3, 9, 9), dtype=np.float32)
+        X = np.empty((batch_size, 1, 9, 9), dtype=np.float32)
         y = np.empty(batch_size, dtype=np.float32)
 
         accepted = 0
@@ -262,7 +298,7 @@ class LmdbSampler:
                 continue
 
             q, visits = self.unpack("di", v)
-            if visits < self.cfg.min_count:
+            if visits < MIN_COUNT:
                 continue
 
             state_int = int.from_bytes(k, "big", signed=False)
@@ -272,11 +308,8 @@ class LmdbSampler:
             syms = self.game.all_symmetries_fast(board)
             board = syms[random.randrange(0, 8)]
 
-            # 3-channel encoding
-            x_plane = (board == 1).astype(np.float32)
-            o_plane = (board == -1).astype(np.float32)
-            e_plane = (board == 0).astype(np.float32)
-            X[accepted] = np.stack([x_plane, o_plane, e_plane], axis=0)
+            # single-channel encoding with values in {-1,0,1}
+            X[accepted, 0] = board.astype(np.float32)
 
             y[accepted] = float(q)
             accepted += 1
@@ -307,19 +340,19 @@ def _pretty_step_line(step: int, total: int, train_mse: float, val_mse: Optional
     )
 
 
-def train(cfg: TrainConfig):
-    device = pick_device(cfg.prefer_cuda)
+def train():
+    device = pick_device(PREFER_CUDA)
 
-    os.makedirs(cfg.out_dir, exist_ok=True)
-    model_path = os.path.join(cfg.out_dir, f"model_{cfg.model_option}.pt")
-    train_plot_path = os.path.join(cfg.out_dir, f"train_loss_{cfg.model_option}.png")
-    val_plot_path = os.path.join(cfg.out_dir, f"val_loss_{cfg.model_option}.png")
+    os.makedirs(OUT_DIR, exist_ok=True)
+    model_path = os.path.join(OUT_DIR, f"model_{MODEL_OPTION}.pt")
+    train_plot_path = os.path.join(OUT_DIR, f"train_loss_{MODEL_OPTION}.png")
+    val_plot_path = os.path.join(OUT_DIR, f"val_loss_{MODEL_OPTION}.png")
 
     game = UltimateTicTacToeGame(q_table={}, training=False)
-    sampler = LmdbSampler(cfg, game)
+    sampler = LmdbSampler(game)
 
-    model = build_model(cfg.model_option).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    model = build_model(MODEL_OPTION).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
     start_step = 0
     history = {"train_loss": [], "val_loss": []}
@@ -341,7 +374,7 @@ def train(cfg: TrainConfig):
             plt.plot(history["train_loss"], label="Train Loss")
             plt.legend()
             plt.title("UTTT CNN Training")
-            plt.xlabel(f"Logged every {cfg.log_every} steps")
+            plt.xlabel(f"Logged every {LOG_EVERY} steps")
             plt.ylabel("MSE")
             plt.tight_layout()
             plt.savefig(train_plot_path)
@@ -352,7 +385,7 @@ def train(cfg: TrainConfig):
             plt.plot(history["val_loss"], label="Validation Loss")
             plt.legend()
             plt.title("UTTT CNN Validation")
-            plt.xlabel(f"Evaluated every {cfg.val_every} steps")
+            plt.xlabel(f"Evaluated every {VAL_EVERY} steps")
             plt.ylabel("MSE")
             plt.tight_layout()
             plt.savefig(val_plot_path)
@@ -387,7 +420,7 @@ def train(cfg: TrainConfig):
 
     # ----------------- VALIDATION SET -----------------
     print(">>> Building validation set...")
-    Xv_np, yv_np, vtries, vdt = sampler.sample_batch(cfg.val_size)
+    Xv_np, yv_np, vtries, vdt = sampler.sample_batch(VAL_SIZE)
     Xv = torch.from_numpy(Xv_np).to(device)
     yv = torch.from_numpy(yv_np).to(device)
     print(f">>> Val batch ready in {vdt:.3f}s (tries={vtries})")
@@ -396,8 +429,8 @@ def train(cfg: TrainConfig):
     last_log_t = time.time()
     last_log_samples = 0
 
-    for step in range(start_step + 1, cfg.steps + 1):
-        X_np, y_np, tries, batch_dt = sampler.sample_batch(cfg.batch_size)
+    for step in range(start_step + 1, STEPS + 1):
+        X_np, y_np, tries, batch_dt = sampler.sample_batch(BATCH_SIZE)
 
         X = torch.from_numpy(X_np).to(device)
         y = torch.from_numpy(y_np).to(device)
@@ -410,20 +443,20 @@ def train(cfg: TrainConfig):
         optimizer.step()
 
         # logging cadence like your old script
-        if step % cfg.log_every == 0:
+        if step % LOG_EVERY == 0:
             history["train_loss"].append(float(loss.item()))
 
             now = time.time()
-            last_log_samples += cfg.batch_size * cfg.log_every
+            last_log_samples += BATCH_SIZE * LOG_EVERY
             elapsed = now - last_log_t
-            sps = (cfg.batch_size * cfg.log_every) / max(elapsed, 1e-9)
+            sps = (BATCH_SIZE * LOG_EVERY) / max(elapsed, 1e-9)
             last_log_t = now
 
             # optional val info (printed on val steps)
-            line = _pretty_step_line(step, cfg.steps, float(loss.item()), None, batch_dt, tries, sps)
+            line = _pretty_step_line(step, STEPS, float(loss.item()), None, batch_dt, tries, sps)
             print(line)
 
-        if step % cfg.val_every == 0:
+        if step % VAL_EVERY == 0:
             model.eval()
             with torch.no_grad():
                 val_pred = model(Xv)
@@ -434,13 +467,13 @@ def train(cfg: TrainConfig):
             print(f"   ↳ Validation MSE={val_loss:.6f}")
 
         # save cadence: single file overwritten (your run-style)
-        if step % cfg.save_every == 0:
+        if step % SAVE_EVERY == 0:
             save_checkpoint(step)
             save_plots()
             print(f"    Saved checkpoint (step {step}) -> {model_path}")
 
     # final save
-    save_checkpoint(cfg.steps)
+    save_checkpoint(STEPS)
     save_plots()
 
     print("\n>>> Training finished")
@@ -448,15 +481,27 @@ def train(cfg: TrainConfig):
     print(">>> Plots:", train_plot_path, "|", val_plot_path)
 
 
+def run_experiments():
+    global MODEL_OPTION, STEPS, LR, MIN_COUNT
+
+    # Define a schedule: tuple(model, steps, lr, min_count)
+    schedule = [
+        ("A", 100_000, 1e-4, 1),     # Best model A, longest run
+        ("B", 60_000, 5e-4, 1),      # Different LR
+        ("C", 50_000, 1e-4, 1),      # Freestyle C standard run
+        ("D", 50_000, 2e-4, 1),      # Keep stride model with adjusted LR
+        ("E", 30_000, 1e-4, 2),      # Shortest and MIN_COUNT=2 as requested
+    ]
+
+    for m, steps, lr, mc in schedule:
+        MODEL_OPTION = m
+        STEPS = steps
+        LR = lr
+        MIN_COUNT = mc
+        print(f"\n=== Running model {m} | steps={steps:,} | lr={lr} | min_count={mc} ===")
+        train()
+
+
 if __name__ == "__main__":
-    cfg = TrainConfig(model_option="A")
-    train(cfg)
-    cfg = TrainConfig(model_option="B")
-    train(cfg)
-    cfg = TrainConfig(model_option="C", lr=1e-5)
-    train(cfg)
-    cfg = TrainConfig(model_option="D")
-    train(cfg)
-    cfg = TrainConfig(model_option="E", lr=1e-5,steps=30_000)
-    train(cfg)
+    run_experiments()
 

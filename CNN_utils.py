@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 
 from logic import UltimateTicTacToeGame
-from CNN import build_model, pick_device, TrainConfig
+from CNN import build_model, pick_device, OUT_DIR
 
 
 # ============================================================
@@ -26,27 +26,23 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
         super().__init__(**kwargs)
         self.model = model
         self.device = device
-        self.mode = mode  # "meta_only", "pure_cnn", "local_priority"
+        self.mode = mode  # "meta_only", "pure_cnn", "local_priority", "heuristic"
         self.model.eval()
 
     # -----------------------------
-    # Board -> tensor (3 channels)
+    # Board -> tensor (1 channel)
     # -----------------------------
     def _board_to_tensor(self, board9x9: np.ndarray) -> torch.Tensor:
-        # board9x9 is your {-1,0,1} representation.
-        board = board9x9.astype(np.int8)
-        x_plane = (board == 1).astype(np.float32)
-        o_plane = (board == -1).astype(np.float32)
-        e_plane = (board == 0).astype(np.float32)
-
-        x = np.stack([x_plane, o_plane, e_plane], axis=0)  # (3,9,9)
-        x = torch.from_numpy(x)[None, :, :, :]             # (1,3,9,9)
+        # single-channel tensor with values in {-1,0,1}
+        x = torch.from_numpy(board9x9.astype(np.float32))[None, None, :, :]
         return x.to(self.device)
 
     @torch.no_grad()
     def _value_of_board(self, board9x9: np.ndarray) -> float:
         x = self._board_to_tensor(board9x9)
         v = self.model(x).item()
+
+
         return float(v)
 
     # -----------------------------
@@ -67,6 +63,8 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
                 best_score = score
                 best = (bi, bj, r, c)
 
+
+
         return best
 
     # -----------------------------
@@ -77,7 +75,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
         """Same as your current file, just uses 3ch value net now."""
 
         if self.mode == "heuristic":
-            super().agent_smart_move()
+            return super().agent_smart_move()
 
         # playable boards
         if self.curr_board is None:
@@ -97,7 +95,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
 
         # ------------------ PURE CNN ------------------
         if self.mode == "pure_cnn":
-            best = self.cnn_best_move(all_moves)
+            best = self.best_from_moves(all_moves)
             if best is None:
                 self.random_plays += 1
                 best = random.choice(all_moves)
@@ -225,13 +223,13 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
         q_table={},
         training=False,
         multiprocess=False,
-        random=False
+        random=True
     )
 
 
 
     for _ in range(n_games):
-        if _%50==0:
+        if _%10==0:
             print(_)
         game.play_one_game(training=False, epsilon=0.0)
         w = game.check_true_win()
@@ -256,16 +254,8 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
 
 
 if __name__ == "__main__":
-    run_dir = TrainConfig.out_dir
-
-
-    #play_games(model, device, mode="meta_only", n_games=1000)
-
+    run_dir = OUT_DIR
 
     for model_option in ["A","B","C","D","E"]:
-
         model, device = load_model(run_dir, model_option)
-
-        play_games(model, device, mode="heuristic", n_games=400)
-
-    #play_games(model, device, mode="local_priority", n_games=1000)
+        play_games(model, device, mode="pure_cnn", n_games=100)

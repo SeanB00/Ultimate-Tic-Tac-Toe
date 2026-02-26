@@ -7,7 +7,7 @@ from multiprocessing import Pool
 from lmdb_qtable import LMDBQTable
 import shrinker
 EPS_START = 1.0      # (full exploration)
-EPS_END = 0.1       # (mostly exploitation)
+EPS_END = 0.2       # (mostly exploitation)
 
 #as training grows with exploit more linearly
 
@@ -29,7 +29,7 @@ def init_worker(qtable):
 class UltimateTicTacToeGame:
 
     #Training tells if we epsilon-greedy or run regularly, multiprocess if we update the table inside or outside the class
-    def __init__(self, q_table=None, training=False, multiprocess=False, random=True):
+    def __init__(self, q_table=None, training=False, multiprocess=False, randomPlayer=True):
         # Board representations
         self.board_rep = np.zeros((9, 9), dtype=int)         # global 9x9
         self.full_board = np.zeros((3, 3, 3, 3), dtype=int)  # 3x3 subboards of 3x3
@@ -38,7 +38,7 @@ class UltimateTicTacToeGame:
         # Symbols
         self.player_symbol = -1
         self.agent_symbol = 1
-        self.random = random
+        self.randomPlayer = randomPlayer
         # Counters
         self.num_plays = 0       # total agent moves
         self.random_plays = 0    # times we FALL BACK to random (no Q info / forced random)
@@ -410,14 +410,7 @@ class UltimateTicTacToeGame:
 
         r, c = random.choice(tuple(self.empty_places[bi][bj]))
 
-        self.full_board[bi][bj][r][c] = self.agent_symbol
-        self.place_in_rep(bi, bj, r, c, self.agent_symbol)
-        self.empty_places[bi][bj].remove((r, c))
-
-        w = self.check_win(self.full_board[bi][bj])
-        if w != 0 or self.tie(self.full_board[bi][bj], self.empty_places[bi][bj]):
-            self.sub_boards[bi][bj] = w
-            self.empty_sub_places.remove((bi, bj))
+        self.apply_agent_move(bi, bj, r, c)
 
         next_b = (r, c)
         self.curr_board = None if self.sub_board_is_done(*next_b) else next_b
@@ -528,7 +521,7 @@ class UltimateTicTacToeGame:
     def best_from_moves(self, move_list):
         """
         Among the given moves, pick the one whose resulting board
-        has the highest Q-value. Returns None if no successor state
+        has the highest Q-value/CNN-value. Returns None if no successor state
         is found in Q-table.
         """
         best = None
@@ -732,7 +725,6 @@ class UltimateTicTacToeGame:
         - apply the same transform inside each 3x3 subboard
         """
 
-        import numpy as np
 
         # ---- transforms that work for BOTH 2D (3x3) and 3D (3x3x9) ----
         def I(x):
@@ -808,7 +800,7 @@ class UltimateTicTacToeGame:
     # ------------------------------------------------------------
     # Game loop
     # ------------------------------------------------------------
-    def play_one_game(self, epsilon=1.0, training=None, random=None):
+    def play_one_game(self, epsilon=1.0, training=None, randomPlayer=None):
         """
         Plays one game:
         - Agent plays with epsilon-greedy if training=True,
@@ -824,7 +816,9 @@ class UltimateTicTacToeGame:
             training = self.training
 
         if random is None:
-            random = self.random
+            randomPlayer = self.randomPlayer
+
+
 
 
         self.init_game()
@@ -847,7 +841,7 @@ class UltimateTicTacToeGame:
                 break
 
             # Opponent random move
-            if random:
+            if randomPlayer:
                 self.player_random_move()
             else:
                 self.player_smart_move()
@@ -887,6 +881,7 @@ def run_games_chunk(args):
         num_games: how many games to simulate in this chunk
         seed: RNG seed for reproducibility
 
+
     Returns:
         local_q: dict {state_int: (avg_target_over_chunk, count_in_chunk)}
         agent_w: number of agent wins
@@ -896,7 +891,7 @@ def run_games_chunk(args):
         num_plays: total agent moves
         epsilon_used: epsilon for this chunk
     """
-    num_games, seed, epsilon = args
+    num_games, seed, epsilon, randomPlayer = args
 
     random.seed(seed)
     np.random.seed(seed)
@@ -905,6 +900,7 @@ def run_games_chunk(args):
         q_table=GLOBAL_QTABLE,
         training=True,
         multiprocess=True,
+        randomPlayer=randomPlayer
     )
 
     local_q = {}
@@ -948,7 +944,7 @@ def run_games_chunk(args):
 class Games:
 
 
-    def __init__(self, num_games, processes=None, log_every=1000, chunk_size=50):
+    def __init__(self, num_games, processes=None, log_every=1000, chunk_size=50, randomPlayer=True):
         self.num_games = num_games
         self.processes = processes or multiprocessing.cpu_count()
         self.log_every = log_every
@@ -957,12 +953,14 @@ class Games:
         self.agent_wins = 0
         self.player_wins = 0
         self.ties = 0
+        self.randomPlayer = randomPlayer
 
-        # Main game loads q.pkl ONCE and keeps it as a normal dict
+        # Main game loads ONCE and keeps it as a normal dict
         self.game = UltimateTicTacToeGame(
             q_table=None,
             training=False,
-            multiprocess=False
+            multiprocess=False,
+            randomPlayer=randomPlayer
         )
 
     # ------------------------------------------------------------
@@ -990,7 +988,7 @@ class Games:
             # Linear epsilon schedule across chunks: EPS_START -> EPS_END
             frac = i / (num_chunks - 1) if num_chunks > 1 else 1.0
             epsilon = EPS_START + frac * (EPS_END - EPS_START)
-            args_list.append((self.chunk_size, base_seed + i, epsilon))
+            args_list.append((self.chunk_size, base_seed + i, epsilon, self.randomPlayer))
 
         num_random = 0
         num_plays = 0
@@ -1083,7 +1081,9 @@ class Games:
 
         for i in range(1, self.num_games + 1):
             # evaluation: no exploration
-            self.game.play_one_game(epsilon=epsilon, training=training)
+
+
+            self.game.play_one_game(epsilon=epsilon, training=training, randomPlayer=self.randomPlayer)
 
             w = self.game.check_true_win()
 
@@ -1104,35 +1104,44 @@ class Games:
         print(f"Done evaluation in {total_t:.2f}s ({speed:.2f} games/sec)")
 
 
+
+
+
 if __name__ == "__main__":
     cores = multiprocessing.cpu_count()
     start_time = time.time()
-    # # 1) TRAIN
-    # games = Games(
-    # num_games=100_000,     # increase this for stronger agent
-    # processes=cores,
-    # log_every=10_000,
-    # chunk_size=100
-    # )
-    #
-    # games.multi_process_train()
-    #
-    # print("TRAINING DONE")
-    # print("Agent win %:", 100 * games.agent_wins / games.num_games)
-    # print("Player win %:", 100 * games.player_wins / games.num_games)
-    # print("Tie %:", 100 * games.ties / games.num_games)
-    #
-    # #Save resulting Q-table (already a normal dict)
-    # #hashing.save_qtable("q.pkl", games.game.q_table)
-    #
-    # # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
-    # print("Linux training done")
-    # shrinker.refresh()
+    # 1) TRAIN
+
+    random_player = random.choice([False, True, True])
+
+    print(f"Training against random: {random_player}")
+
+    games = Games(
+    num_games=350_000,     # increase this for stronger agent
+    processes=cores,
+    log_every=10_000,
+    chunk_size=100,
+    randomPlayer=random_player
+    )
+
+    games.multi_process_train()
+
+    print("TRAINING DONE")
+    print("Agent win %:", 100 * games.agent_wins / games.num_games)
+    print("Player win %:", 100 * games.player_wins / games.num_games)
+    print("Tie %:", 100 * games.ties / games.num_games)
+
+    #Save resulting Q-table (already a normal dict)
+    #hashing.save_qtable("q.pkl", games.game.q_table)
+
+    # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
+    print("Linux training done")
+    shrinker.refresh()
 
 
 
-    eval_games = Games(num_games=2_000, processes=None, log_every=10)
-    eval_games.single_process_train(training=False, epsilon=0.0)
+    eval_games = Games(num_games=2_000, processes=None, log_every=10, randomPlayer=True)
+    eval_games.single_process_train(training=True, epsilon=0.0)
 
     print("EVAL agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)
     print("EVAL player win %:", 100 * eval_games.player_wins / eval_games.num_games)
