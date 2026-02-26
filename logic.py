@@ -219,13 +219,9 @@ class UltimateTicTacToeGame:
         """
         Opponent plays a purely random legal move.
         """
-        if self.curr_board is None:
-            bi, bj = random.choice(tuple(self.empty_sub_places))
-        else:
-            bi, bj = self.curr_board
-
+        playable = self.get_playable_boards()
+        bi, bj = random.choice(tuple(playable))
         r, c = random.choice(tuple(self.empty_places[bi][bj]))
-
         self.apply_player_move(bi, bj, r, c)
 
 
@@ -244,14 +240,7 @@ class UltimateTicTacToeGame:
         # ------------------------------------------------------------
         # Determine playable boards
         # ------------------------------------------------------------
-        if self.curr_board is None:
-            playable = self.empty_sub_places
-        else:
-            playable = (
-                {self.curr_board}
-                if self.curr_board in self.empty_sub_places
-                else self.empty_sub_places
-            )
+        playable = self.get_playable_boards()
 
         all_moves = [
             (bi, bj, r, c)
@@ -379,14 +368,7 @@ class UltimateTicTacToeGame:
                 self.apply_agent_move(*best)
                 return used
         # otherwise choose best move normally using Q-table
-        if self.curr_board is None:
-            playable = tuple(self.empty_sub_places)
-        else:
-            playable = (
-                [self.curr_board]
-                if self.curr_board in self.empty_sub_places
-                else tuple(self.empty_sub_places)
-            )
+        playable = tuple(self.get_playable_boards())
 
         all_moves = [
             (bi, bj, r, c)
@@ -403,17 +385,10 @@ class UltimateTicTacToeGame:
         Used ONLY for epsilon exploration; does NOT increment random_plays,
         because random_plays is reserved for missing-Q fallbacks.
         """
-        if self.curr_board is None:
-            bi, bj = random.choice(tuple(self.empty_sub_places))
-        else:
-            bi, bj = self.curr_board
-
+        playable = self.get_playable_boards()
+        bi, bj = random.choice(tuple(playable))
         r, c = random.choice(tuple(self.empty_places[bi][bj]))
-
         self.apply_agent_move(bi, bj, r, c)
-
-        next_b = (r, c)
-        self.curr_board = None if self.sub_board_is_done(*next_b) else next_b
 
     # ------------------------------------------------------------
     # Apply move

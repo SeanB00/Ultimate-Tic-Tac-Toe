@@ -80,17 +80,20 @@ def act(name: str):
     name = name.lower()
     if name == "relu":
         return nn.ReLU(inplace=True)
+    # Avoid disallowed/undesired activations by mapping them to safe alternatives
     if name == "gelu":
-        return nn.GELU()
+        # Map GELU to LeakyReLU to avoid using GELU while keeping smooth-ish nonlinearity
+        return nn.LeakyReLU(0.05, inplace=True)
     if name == "leakyrelu":
         return nn.LeakyReLU(0.1, inplace=True)
     if name == "tanh":
         return nn.Tanh()
     if name == "silu" or name == "swish":
-        return nn.SiLU(inplace=True)
+        # Replace SiLU/Swish with ELU to avoid SiLU
+        return nn.ELU(inplace=True)
     if name == "mish":
-        # no inplace for Mish in some torch versions
-        return nn.Mish()
+        # Replace Mish with ELU to avoid Mish
+        return nn.ELU(inplace=True)
     if name == "elu":
         return nn.ELU(inplace=True)
     if name == "selu":
@@ -111,18 +114,15 @@ class ModelA(nn.Module):
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1, bias=False),
             nn.BatchNorm2d(64),
-            act("silu"),
+            act("elu"),
             nn.Conv2d(64, 128, 3, padding=1, bias=False),
             nn.BatchNorm2d(128),
-            act("mish"),
-            nn.Conv2d(128, 128, 3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            act("silu"),
+            act("elu"),
         )
         self.fc = nn.Sequential(
             nn.Flatten(),
             nn.Linear(128 * 9 * 9, 512),
-            act("gelu"),
+            act("elu"),
             nn.Linear(512, 128),
             act("prelu"),
             nn.Linear(128, 1),
@@ -139,14 +139,14 @@ class ModelB(nn.Module):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1),  # single conv, 64 filters
-            act("gelu"),
+            act("elu"),
         )
         self.fc = nn.Sequential(
             nn.Flatten(),
             nn.Linear(64 * 9 * 9, 256),
             act("relu"),
             nn.Linear(256, 64),
-            act("gelu"),
+            act("leakyrelu"),
             nn.Linear(64, 1),
             act("tanh"),
         )
@@ -171,7 +171,7 @@ class ModelC(nn.Module):
         self.fc = nn.Sequential(
             nn.Flatten(),
             nn.Linear(192 * 9 * 9, 256),
-            act("gelu"),
+            act("leakyrelu"),
             nn.Linear(256, 64),
             act("hardswish"),
             nn.Linear(64, 1),
@@ -195,7 +195,7 @@ class ModelD(nn.Module):
         self.fc = nn.Sequential(
             nn.Flatten(),
             nn.Linear(128 * 3 * 3, 256),
-            act("gelu"),
+            act("leakyrelu"),
             nn.Linear(256, 64),
             act("relu"),
             nn.Linear(64, 1),
@@ -218,7 +218,7 @@ class ModelE(nn.Module):
             act("relu"),
             nn.Conv2d(48, 96, 3, padding=1, bias=False),
             nn.BatchNorm2d(96),
-            act("silu"),
+            act("elu"),
         )
         self.fc = nn.Sequential(
             nn.Flatten(),

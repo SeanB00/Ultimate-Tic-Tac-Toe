@@ -78,14 +78,7 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
             return super().agent_smart_move()
 
         # playable boards
-        if self.curr_board is None:
-            playable = tuple(self.empty_sub_places)
-        else:
-            playable = (
-                [self.curr_board]
-                if self.curr_board in self.empty_sub_places
-                else tuple(self.empty_sub_places)
-            )
+        playable = tuple(self.get_playable_boards())
 
         all_moves = [
             (bi, bj, r, c)
