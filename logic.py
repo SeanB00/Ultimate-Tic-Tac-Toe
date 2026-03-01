@@ -113,6 +113,16 @@ class UltimateTicTacToeGame:
             return {self.curr_board}
         return set(self.empty_sub_places)
 
+    def get_available_moves(self):
+
+        playable = self.get_playable_boards()
+        all_moves = [
+            (bi, bj, r, c)
+            for (bi, bj) in playable
+            for (r, c) in self.empty_places[bi][bj]
+        ]
+        return all_moves
+
     def print_board(self, board):
 
         s = ""

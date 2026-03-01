@@ -23,7 +23,7 @@ KEY_BYTES = 32
 # LMDB value format:
 # "d" = double (q_value), "i" = int (visit count)
 # Must match exactly how you packed values when writing the table.
-VALUE_FMT = "di"
+VALUE_FMT = "dI"
 
 # Expected size (in bytes) of each LMDB value entry, computed from VALUE_FMT.
 VALUE_SIZE = struct.calcsize(VALUE_FMT)

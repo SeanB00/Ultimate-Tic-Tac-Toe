@@ -9,7 +9,7 @@ This file merges the "good parts" of both versions you showed:
 - Loss plots saved to png (train + val) and updated during training
 - Nicer logging, including sampler batch time + tries
 
-LMDB value format: struct.pack("di", q_value(double), visits(int)).
+LMDB value format: struct.pack("dI", q_value(double), visits(uint32)).
 """
 
 # --- OpenMP duplicate runtime workaround (Windows + torch/numpy/mkl)
@@ -49,7 +49,7 @@ LOG_EVERY = 100
 VAL_EVERY = 500
 SAVE_EVERY = 1000
 
-OUT_DIR = "cnn_runs"
+OUT_DIR = "cnn_run_local"
 MODEL_OPTION = "A"  # A / B / C / D / E
 
 MIN_COUNT = 1
@@ -117,7 +117,7 @@ class ModelA(nn.Module):
             act("elu"),
             nn.Conv2d(64, 128, 3, padding=1, bias=False),
             nn.BatchNorm2d(128),
-            act("elu"),
+            act("relu"),
         )
         self.fc = nn.Sequential(
             nn.Flatten(),
@@ -264,7 +264,7 @@ class LmdbSampler:
         self.cursor = self.txn.cursor()
 
         self.unpack = struct.unpack
-        self.value_size = struct.calcsize("di")
+        self.value_size = struct.calcsize("dI")
 
         if not self.cursor.first():
             raise RuntimeError("LMDB appears empty")
@@ -297,7 +297,7 @@ class LmdbSampler:
             if len(v) != self.value_size:
                 continue
 
-            q, visits = self.unpack("di", v)
+            q, visits = self.unpack("dI", v)
             if visits < MIN_COUNT:
                 continue
 
