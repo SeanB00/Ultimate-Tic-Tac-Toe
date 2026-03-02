@@ -216,7 +216,7 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
         q_table={},
         training=False,
         multiprocess=False,
-        random=True
+        randomPlayer=True
     )
 
 

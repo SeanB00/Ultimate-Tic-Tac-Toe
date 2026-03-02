@@ -110,7 +110,7 @@ def act(name: str):
 class ModelA(nn.Module):
     def __init__(self, in_ch: int = 1):
         super().__init__()
-        # Stronger CNN: 3 conv blocks + bigger FC head
+        # Stronger CNN: 2 conv blocks + bigger FC head
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1, bias=False),
             nn.BatchNorm2d(64),
@@ -225,7 +225,7 @@ class ModelE(nn.Module):
             nn.Linear(96 * 9 * 9, 128),
             act("softplus"),
             nn.Linear(128, 64),
-            act("relu"),
+            act("elu"),
             nn.Linear(64, 1),
             act("tanh"),
         )

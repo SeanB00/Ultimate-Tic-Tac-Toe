@@ -800,7 +800,7 @@ class UltimateTicTacToeGame:
         if training is None:
             training = self.training
 
-        if random is None:
+        if randomPlayer is None:
             randomPlayer = self.randomPlayer
 
 
