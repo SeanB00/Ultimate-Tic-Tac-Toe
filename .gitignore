@@ -9,6 +9,10 @@ backup_qtable.lmdb
 fixed_qtable.lmdb
 fixed_qtable.lmdb-lock
 qtable_shrink.lmdb
+expanded_X_min2.npy
+expanded_y_min2.npy
+mixed_X_v1.npy
+mixed_y_v1.npy
 venv/
 # Virtual environment
 .venv/
