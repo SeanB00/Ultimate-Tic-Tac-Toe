@@ -1,4 +1,4 @@
-import hashing
+from uttt.game import hashing
 import numpy as np
 a = [1,2,3,4]
 b = a
@@ -14,3 +14,14 @@ if [].append(1):
     print("yes")
 if [1,2]:
     print("no")
+
+
+
+import numpy as np
+
+a = np.zeros((5,5),dtype="int8")
+print(a, end="\n\n")
+
+
+a= a[1:3,2:5]
+print(a)

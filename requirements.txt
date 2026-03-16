@@ -1,3 +1,8 @@
+google-genai
+kivy
 lmdb
 matplotlib
 numpy
+
+# Install PyTorch separately so GPU users can choose the correct wheel:
+# https://pytorch.org/get-started/locally/

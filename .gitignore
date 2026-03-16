@@ -13,6 +13,10 @@ expanded_X_min2.npy
 expanded_y_min2.npy
 mixed_X_v1.npy
 mixed_y_v1.npy
+data/qtable/
+data/processed/
+models/
+artifacts/
 venv/
 # Virtual environment
 .venv/
