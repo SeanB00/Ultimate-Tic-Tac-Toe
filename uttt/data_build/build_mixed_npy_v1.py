@@ -12,29 +12,25 @@ Pipeline:
 5) Symmetry-expand sampled states and write exact per-bucket row targets.
 """
 
-import os
-import json
 import math
 import random
-import struct
 import sys
 import time
+import gc
 from dataclasses import dataclass
 from pathlib import Path
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import lmdb
 import numpy as np
 
-from uttt.game import hashing
 from uttt.game.logic import UltimateTicTacToeGame
+from uttt.game.lmdb_qtable import LMDBQTable
 from uttt.paths import (
     EXPANDED_X_PATH,
     EXPANDED_Y_PATH,
     FIXED_QTABLE_PATH,
-    MIXED_META_PATH,
     MIXED_X_PATH,
     MIXED_Y_PATH,
     ensure_project_dirs,
@@ -71,9 +67,6 @@ HIGH_NEG_MAX = -0.5
 SCORE_ONE_ATOL = 1e-9
 
 # LMDB schema
-KEY_BYTES = 32
-VALUE_FMT = "dI"  # (q_value: float64, visits: uint32)
-VALUE_SIZE = struct.calcsize(VALUE_FMT)
 ONECOUNT_VISITS = 1
 
 # Runtime controls
@@ -106,11 +99,6 @@ def split_counts(total, weights):
         flo[by_rem[i % len(by_rem)]] += 1
 
     return flo
-
-
-def decode_board_from_state_int(state_int):
-    """Decode base-3 board hash integer into 9x9 int8 board."""
-    return np.array(hashing.decode_board_from_int(state_int), dtype=np.int8).reshape(9, 9)
 
 
 def check_win_3x3(board3x3):
@@ -209,8 +197,8 @@ class ReservoirStates:
             self.items[j] = item
 
 
-def flush_batch(X_out, y_out, write_idx, boards_batch, targets_batch):
-    """Flush buffered rows to output memmaps and return next write index."""
+def write_batch(X_out, y_out, write_idx, boards_batch, targets_batch):
+    """Write buffered rows into the in-memory output arrays."""
     n = len(boards_batch)
     if n == 0:
         return write_idx
@@ -235,10 +223,10 @@ def main():
     """Build mixed_X_v1.npy and mixed_y_v1.npy using the configured split."""
     t0 = time.time()
     ensure_project_dirs()
-    print("=== Build mixed dataset v1 (retuned) ===")
+    print("=== Build mixed dataset v1 (retuned, RAM mode) ===")
 
-    base_x = np.load(EXPANDED_X_PATH, mmap_mode="r")
-    base_y = np.load(EXPANDED_Y_PATH, mmap_mode="r")
+    base_x = np.load(EXPANDED_X_PATH)
+    base_y = np.load(EXPANDED_Y_PATH)
 
     if base_x.ndim != 3 or base_x.shape[1:] != (9, 9):
         raise ValueError(f"Unexpected base X shape: {base_x.shape}")
@@ -272,62 +260,43 @@ def main():
     }
 
     scanned = 0
-    valid = 0
-    bad_key_len = 0
-    bad_val_len = 0
     onecount_entries = 0
 
     state_candidates_seen = {b: 0 for b in LMDB_BUCKET_ORDER}
     lmdb_hits_by_priority = {b: 0 for b in LMDB_BUCKET_ORDER}
 
-    env = lmdb.open(
-        os.fspath(FIXED_QTABLE_PATH),
-        readonly=True,
-        lock=False,
-        readahead=False,
-        max_readers=1,
-        subdir=False,
-    )
+    qtable = LMDBQTable(path=FIXED_QTABLE_PATH, readonly=True, lock=False, max_readers=1)
 
-    unpack = struct.unpack
-    with env.begin() as txn:
-        cursor = txn.cursor()
-        for k, v in cursor:
-            scanned += 1
-            if PROGRESS_EVERY and scanned % PROGRESS_EVERY == 0:
-                elapsed = max(time.time() - t0, 1e-9)
-                sampled_states = sum(len(reservoirs[b].items) for b in LMDB_BUCKET_ORDER)
-                print(
-                    f"[scan] scanned={scanned:,} valid={valid:,} onecount={onecount_entries:,} "
-                    f"sampled_states={sampled_states:,} speed={scanned/elapsed:,.0f}/s"
-                )
+    try:
+        with qtable.begin_read() as txn:
+            for k, v in qtable.iter_raw_items(txn=txn):
+                scanned += 1
+                if PROGRESS_EVERY and scanned % PROGRESS_EVERY == 0:
+                    elapsed = max(time.time() - t0, 1e-9)
+                    sampled_states = sum(len(reservoirs[b].items) for b in LMDB_BUCKET_ORDER)
+                    print(
+                        f"[scan] scanned={scanned:,} onecount={onecount_entries:,} "
+                        f"sampled_states={sampled_states:,} speed={scanned/elapsed:,.0f}/s"
+                    )
 
-            if len(k) != KEY_BYTES:
-                bad_key_len += 1
-                continue
-            if len(v) != VALUE_SIZE:
-                bad_val_len += 1
-                continue
+                state_int = qtable.state_int_from_key(k)
+                q, visits = qtable.decode_value(v)
+                if int(visits) != ONECOUNT_VISITS:
+                    continue
 
-            valid += 1
-            q, visits = unpack(VALUE_FMT, v)
-            if int(visits) != ONECOUNT_VISITS:
-                continue
+                onecount_entries += 1
+                board = np.array(qtable.decode_board_from_state_int(state_int), dtype=np.int8).reshape(9, 9)
+                occ = int(np.count_nonzero(board))
 
-            onecount_entries += 1
-            state_int = int.from_bytes(k, "big", signed=False)
-            board = decode_board_from_state_int(state_int)
-            occ = int(np.count_nonzero(board))
+                bucket = classify_bucket(board, float(q), occ)
+                if bucket is None:
+                    continue
 
-            bucket = classify_bucket(board, float(q), occ)
-            if bucket is None:
-                continue
-
-            state_candidates_seen[bucket] += 1
-            lmdb_hits_by_priority[bucket] += 1
-            reservoirs[bucket].add((state_int, float(q), occ))
-
-    env.close()
+                state_candidates_seen[bucket] += 1
+                lmdb_hits_by_priority[bucket] += 1
+                reservoirs[bucket].add((state_int, float(q), occ))
+    finally:
+        qtable.close()
 
     sampled_states = {b: reservoirs[b].items for b in LMDB_BUCKET_ORDER}
     state_selected = {b: len(sampled_states[b]) for b in LMDB_BUCKET_ORDER}
@@ -354,31 +323,18 @@ def main():
     if lmdb_row_targets["onecount_random_deep"] > random_avail:
         lmdb_row_targets["onecount_random_deep"] = random_avail
 
-    actual_rows = {
-        "base_min2": base_rows,
-        **{b: lmdb_row_targets[b] for b in LMDB_BUCKET_ORDER},
-    }
-
     final_rows = base_rows + sum(lmdb_row_targets[b] for b in LMDB_BUCKET_ORDER)
 
     print(f"state_selected={state_selected}")
     print(f"lmdb_row_targets={lmdb_row_targets}")
     print(f"final_rows={final_rows:,}")
 
-    X_out = np.lib.format.open_memmap(
-        MIXED_X_PATH,
-        mode="w+",
-        dtype=np.float32,
-        shape=(final_rows, 9, 9),
-    )
-    y_out = np.lib.format.open_memmap(
-        MIXED_Y_PATH,
-        mode="w+",
-        dtype=np.float32,
-        shape=(final_rows,),
-    )
+    X_out = np.empty((final_rows, 9, 9), dtype=np.float32)
+    y_out = np.empty((final_rows,), dtype=np.float32)
 
     write_idx = write_base_rows(base_x, base_y, X_out, y_out)
+    del base_x, base_y
+    gc.collect()
 
     game = UltimateTicTacToeGame(q_table={}, training=False, multiprocess=False)
 
@@ -395,7 +351,7 @@ def main():
             if rows_written_bucket[bucket] >= row_limit:
                 break
 
-            board = decode_board_from_state_int(state_int)
+            board = np.array(qtable.decode_board_from_state_int(state_int), dtype=np.int8).reshape(9, 9)
             syms = game.all_symmetries_fast(board)
 
             for sym in syms:
@@ -406,82 +362,26 @@ def main():
                 rows_written_bucket[bucket] += 1
 
                 if len(boards_batch) >= CHUNK_ROWS:
-                    write_idx = flush_batch(X_out, y_out, write_idx, boards_batch, targets_batch)
+                    write_idx = write_batch(X_out, y_out, write_idx, boards_batch, targets_batch)
                     boards_batch.clear()
                     targets_batch.clear()
 
-    write_idx = flush_batch(X_out, y_out, write_idx, boards_batch, targets_batch)
+    write_idx = write_batch(X_out, y_out, write_idx, boards_batch, targets_batch)
 
     if write_idx != final_rows:
         raise RuntimeError(f"Row mismatch: wrote {write_idx}, expected {final_rows}")
 
-    X_out.flush()
-    y_out.flush()
-
-    # Build row ranges for reproducibility.
-    row_ranges = {}
-    start = 0
-    row_ranges["base_min2"] = [start, start + actual_rows["base_min2"]]
-    start += actual_rows["base_min2"]
-    for b in LMDB_BUCKET_ORDER:
-        row_ranges[b] = [start, start + actual_rows[b]]
-        start += actual_rows[b]
+    np.save(MIXED_X_PATH, X_out)
+    np.save(MIXED_Y_PATH, y_out)
 
     elapsed = time.time() - t0
 
-    meta = {
-        "base_x_path": os.fspath(EXPANDED_X_PATH),
-        "base_y_path": os.fspath(EXPANDED_Y_PATH),
-        "lmdb_path": os.fspath(FIXED_QTABLE_PATH),
-        "out_x_path": os.fspath(MIXED_X_PATH),
-        "out_y_path": os.fspath(MIXED_Y_PATH),
-        "seed": SEED,
-        "chunk_rows": CHUNK_ROWS,
-        "total_rows": final_rows,
-        "base_rows": base_rows,
-        "split_ratios": SPLIT_RATIOS,
-        "target_rows": target_rows,
-        "actual_rows": actual_rows,
-        "shortage_rows_moved_to_random": shortage_rows_moved_to_random,
-        "thresholds": {
-            "onecount_occ_min": ONECOUNT_OCC_MIN,
-            "hard_endgame_occ_min": HARD_ENDGAME_OCC_MIN,
-            "hard_endgame_abs_score_min": HARD_ENDGAME_ABS_SCORE_MIN,
-            "high_pos_min": HIGH_POS_MIN,
-            "high_neg_max": HIGH_NEG_MAX,
-            "score_one_atol": SCORE_ONE_ATOL,
-        },
-        "state_targets_exact": state_targets_exact,
-        "state_selected": state_selected,
-        "state_candidates_seen": state_candidates_seen,
-        "lmdb_hits_by_priority": lmdb_hits_by_priority,
-        "lmdb_scan": {
-            "scanned": scanned,
-            "valid": valid,
-            "bad_key_len": bad_key_len,
-            "bad_val_len": bad_val_len,
-        },
-        "row_ranges": row_ranges,
-        "output_shape": {
-            "x": [int(final_rows), 9, 9],
-            "y": [int(final_rows)],
-            "x_dtype": "float32",
-            "y_dtype": "float32",
-        },
-        "notes": {
-            "symmetry_expansion_for_lmdb": True,
-            "random_seek_used": False,
-            "bucket_precedence": LMDB_BUCKET_ORDER,
-        },
-        "elapsed_sec": round(elapsed, 3),
-    }
-
-    with open(MIXED_META_PATH, "w", encoding="ascii") as f:
-        json.dump(meta, f, indent=2)
-
     print(f"[done] wrote {MIXED_X_PATH}")
     print(f"[done] wrote {MIXED_Y_PATH}")
-    print(f"[done] wrote {MIXED_META_PATH}")
+    print(f"[done] scanned={scanned:,}, onecount_entries={onecount_entries:,}")
+    print(f"[done] state_candidates_seen={state_candidates_seen}")
+    print(f"[done] lmdb_hits_by_priority={lmdb_hits_by_priority}")
+    print(f"[done] shortage_rows_moved_to_random={shortage_rows_moved_to_random}")
     print(f"[done] elapsed={elapsed:.2f}s")
 
 

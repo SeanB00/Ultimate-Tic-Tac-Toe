@@ -14,7 +14,7 @@ from uttt.game.logic import UltimateTicTacToeGame
 from google import genai
 
 
-FAST_MODEL = os.getenv("UTTT_API_MODEL", "gemini-3-flash-preview")
+FAST_MODEL = "gemini-3-flash-preview"
 MAX_OUTPUT_TOKENS = 12
 API_KEY = "AIzaSyCFQZrPPLkxa6jeapVT6nLPdcTTpwkUvyk"
 
@@ -42,29 +42,16 @@ def build_prompt(game: UltimateTicTacToeGame, legal_moves) -> str:
     )
 
 
-def extract_move(text: str) -> Optional[Tuple[int, int]]:
+def extract_move(text: str):
     if not text:
         return None
-
-    match = re.search(r"\(?\s*([0-8])\s*,\s*([0-8])\s*\)?", text)
-    if match:
-        return int(match.group(1)), int(match.group(2))
 
     try:
         value = ast.literal_eval(text.strip())
     except (ValueError, SyntaxError):
         return None
+    return int(value[0]), int(value[1])
 
-    if (
-        isinstance(value, (tuple, list))
-        and len(value) == 2
-        and all(isinstance(v, int) for v in value)
-        and 0 <= value[0] <= 8
-        and 0 <= value[1] <= 8
-    ):
-        return int(value[0]), int(value[1])
-
-    return None
 
 
 def generate_response_text(prompt: str, model: str) -> str:

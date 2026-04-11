@@ -12,8 +12,8 @@ ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 FIXED_QTABLE_PATH = QTABLE_DIR / "fixed_qtable.lmdb"
 SHRUNK_QTABLE_PATH = QTABLE_DIR / "qtable_shrink.lmdb"
 
-EXPANDED_X_PATH = PROCESSED_DATA_DIR / "expanded_X_min2.npy"
-EXPANDED_Y_PATH = PROCESSED_DATA_DIR / "expanded_y_min2.npy"
+EXPANDED_X_PATH = PROCESSED_DATA_DIR / "expanded_X_min2_.npy"
+EXPANDED_Y_PATH = PROCESSED_DATA_DIR / "expanded_y_min2_.npy"
 EXPANDED_META_PATH = PROCESSED_DATA_DIR / "expanded_meta_min2.json"
 
 MIXED_X_PATH = PROCESSED_DATA_DIR / "mixed_X_v1.npy"

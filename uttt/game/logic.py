@@ -22,7 +22,7 @@ def init_worker(qtable):
     global GLOBAL_QTABLE
     GLOBAL_QTABLE = qtable
 
-    lmdb_qtable.GLOBAL_TXN = qtable.env.begin(write=False)
+    lmdb_qtable.GLOBAL_TXN = qtable.begin_read()
 
 
 
@@ -57,7 +57,7 @@ class UltimateTicTacToeGame:
         else:
             self.q_table = q_table
         if lmdb_qtable.GLOBAL_TXN is None and isinstance(self.q_table, LMDBQTable):
-            lmdb_qtable.GLOBAL_TXN = self.q_table.env.begin(write=False)
+            lmdb_qtable.GLOBAL_TXN = self.q_table.begin_read()
 
         self.training = training
         self.multiprocess = multiprocess
@@ -732,10 +732,6 @@ class UltimateTicTacToeGame:
 
         if randomPlayer is None:
             randomPlayer = self.randomPlayer
-
-
-
-
         self.init_game()
         states = []
 
@@ -1024,38 +1020,39 @@ class Games:
 
 if __name__ == "__main__":
     cores = multiprocessing.cpu_count()
+    print(cores)
     start_time = time.time()
     # 1) TRAIN
 
-    random_player = random.choice([False, True, True])
+    # random_player = random.choice([False, True, True])
+    #
+    # print(f"Training against random: {random_player}")
+    #
+    # games = Games(
+    # num_games=350_000,     # increase this for stronger agent
+    # processes=cores,
+    # log_every=10_000,
+    # chunk_size=100,
+    # randomPlayer=random_player
+    # )
+    #
+    # games.multi_process_train()
+    #
+    # print("TRAINING DONE")
+    # print("Agent win %:", 100 * games.agent_wins / games.num_games)
+    # print("Player win %:", 100 * games.player_wins / games.num_games)
+    # print("Tie %:", 100 * games.ties / games.num_games)
+    #
+    # #Save resulting Q-table (already a normal dict)
+    # #hashing.save_qtable("q.pkl", games.game.q_table)
+    #
+    # # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
+    # print("Linux training done")
+    # shrinker.refresh()
 
-    print(f"Training against random: {random_player}")
-
-    games = Games(
-    num_games=350_000,     # increase this for stronger agent
-    processes=cores,
-    log_every=10_000,
-    chunk_size=100,
-    randomPlayer=random_player
-    )
-
-    games.multi_process_train()
-
-    print("TRAINING DONE")
-    print("Agent win %:", 100 * games.agent_wins / games.num_games)
-    print("Player win %:", 100 * games.player_wins / games.num_games)
-    print("Tie %:", 100 * games.ties / games.num_games)
-
-    #Save resulting Q-table (already a normal dict)
-    #hashing.save_qtable("q.pkl", games.game.q_table)
-
-    # 2) (OPTIONAL) EVALUATION RUN AFTER TRAINING
-    print("Linux training done")
-    shrinker.refresh()
 
 
-
-    eval_games = Games(num_games=2_000, processes=None, log_every=10, randomPlayer=True)
+    eval_games = Games(num_games=1_000, processes=None, log_every=10, randomPlayer=False)
     eval_games.single_process_train(training=True, epsilon=0.0)
 
     print("EVAL agent win %:", 100 * eval_games.agent_wins / eval_games.num_games)

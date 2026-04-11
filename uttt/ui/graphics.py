@@ -10,7 +10,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from kivy.app import App
 from kivy.core.window import Window
-from kivy.graphics import Color, Line, Rectangle, RoundedRectangle
+from kivy.graphics import Color, Line, Rectangle
 from kivy.metrics import dp
 from kivy.properties import ObjectProperty
 from kivy.uix.boxlayout import BoxLayout
@@ -21,31 +21,23 @@ from kivy.uix.screenmanager import FadeTransition, Screen, ScreenManager
 from kivy.uix.widget import Widget
 
 from uttt.game.logic import UltimateTicTacToeGame
-from uttt.ml.cnn_utils import UltimateTicTacToeCNN, load_model
+from uttt.ml.cnn_agent import UltimateTicTacToeCNN, load_model
 
 
 PALETTE = {
-    "window_bg": (0.07, 0.10, 0.16, 1.0),
-    "surface": (0.11, 0.14, 0.20, 1.0),
-    "surface_alt": (0.09, 0.12, 0.18, 1.0),
-    "surface_highlight": (0.12, 0.16, 0.24, 1.0),
-    "border": (0.36, 0.47, 0.63, 0.70),
-    "text": (0.93, 0.96, 1.0, 1.0),
-    "text_muted": (0.76, 0.83, 0.94, 1.0),
-    "button_green": (0.17, 0.72, 0.61, 1.0),
-    "button_green_border": (0.34, 0.88, 0.77, 1.0),
-    "button_blue": (0.27, 0.53, 0.90, 1.0),
-    "button_blue_border": (0.47, 0.69, 0.98, 1.0),
-    "button_teal": (0.15, 0.62, 0.76, 1.0),
-    "button_teal_border": (0.34, 0.84, 0.95, 1.0),
-    "board_playable_light": (0.21, 0.42, 0.36, 1.0),
-    "board_playable_dark": (0.16, 0.32, 0.28, 1.0),
-    "board_blocked_light": (0.18, 0.23, 0.31, 1.0),
-    "board_blocked_dark": (0.14, 0.18, 0.25, 1.0),
-    "board_won": (0.08, 0.10, 0.14, 1.0),
-    "grid_line": (0.85, 0.90, 0.98, 0.95),
-    "x": (0.99, 0.82, 0.44, 1.0),
-    "o": (0.52, 0.88, 0.97, 1.0),
+    "window_bg": (0.12, 0.12, 0.14, 1.0),
+    "panel": (0.18, 0.18, 0.21, 1.0),
+    "panel_alt": (0.22, 0.22, 0.26, 1.0),
+    "button": (0.28, 0.45, 0.72, 1.0),
+    "button_alt": (0.23, 0.58, 0.45, 1.0),
+    "board_playable": (0.32, 0.38, 0.32, 1.0),
+    "board_blocked": (0.26, 0.26, 0.29, 1.0),
+    "board_won": (0.18, 0.18, 0.21, 1.0),
+    "grid_line": (0.92, 0.92, 0.95, 1.0),
+    "text": (0.96, 0.96, 0.98, 1.0),
+    "text_muted": (0.80, 0.80, 0.84, 1.0),
+    "x": (0.95, 0.78, 0.28, 1.0),
+    "o": (0.50, 0.82, 0.95, 1.0),
 }
 
 
@@ -64,18 +56,13 @@ class GradientPane(BoxLayout):
 
 
 class SurfaceCard(BoxLayout):
-    def __init__(self, fill=None, border=None, radius=18, **kwargs):
+    def __init__(self, fill=None, **kwargs):
         super().__init__(**kwargs)
-        self.fill = fill if fill is not None else PALETTE["surface"]
-        self.border = border if border is not None else PALETTE["border"]
-        self.radius = radius
+        self.fill = fill if fill is not None else PALETTE["panel"]
 
         with self.canvas.before:
             Color(rgba=self.fill)
-            self.fill_rect = RoundedRectangle(radius=[self.radius])
-        with self.canvas.after:
-            Color(rgba=self.border)
-            self.border_line = Line(width=1.2)
+            self.fill_rect = Rectangle()
 
         self.bind(pos=self.update_graphics, size=self.update_graphics)
         self.update_graphics()
@@ -83,48 +70,17 @@ class SurfaceCard(BoxLayout):
     def update_graphics(self, *_args):
         self.fill_rect.pos = self.pos
         self.fill_rect.size = self.size
-        self.border_line.rounded_rectangle = (
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            self.radius,
-        )
 
 
 class ThemedButton(Button):
     def __init__(self, fill=None, border=None, text_color=None, radius=14, **kwargs):
         super().__init__(**kwargs)
-        self.fill = fill if fill is not None else PALETTE["button_blue"]
-        self.border = border if border is not None else PALETTE["button_blue_border"]
-        self.radius = radius
-
+        self.fill = fill if fill is not None else PALETTE["button"]
         self.background_normal = ""
         self.background_down = ""
-        self.background_color = (0, 0, 0, 0)
+        self.background_color = self.fill
         self.color = text_color if text_color is not None else PALETTE["text"]
         self.bold = True
-
-        with self.canvas.before:
-            Color(rgba=self.fill)
-            self.fill_rect = RoundedRectangle(radius=[self.radius])
-        with self.canvas.after:
-            Color(rgba=self.border)
-            self.border_line = Line(width=1.2)
-
-        self.bind(pos=self.update_graphics, size=self.update_graphics)
-        self.update_graphics()
-
-    def update_graphics(self, *_args):
-        self.fill_rect.pos = self.pos
-        self.fill_rect.size = self.size
-        self.border_line.rounded_rectangle = (
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            self.radius,
-        )
 
 
 class CellButton(Button):
@@ -160,7 +116,7 @@ class BoardGrid(GridLayout):
                     r,
                     c,
                     text="",
-                    background_color=PALETTE["board_blocked_light"],
+                    background_color=PALETTE["board_blocked"],
                 )
                 btn.bind(on_release=self.on_cell_pressed)
                 row_buttons.append(btn)
@@ -217,7 +173,6 @@ class BoardGrid(GridLayout):
                 bj = c // 3
                 btn = self.buttons[r][c]
                 sub_status = self.game.sub_boards[bi][bj]
-                is_light = (bi + bj) % 2 == 0
 
                 if sub_status != 0:
                     btn.text = "X" if sub_status == 1 else "O"
@@ -230,13 +185,9 @@ class BoardGrid(GridLayout):
                 btn.color = PALETTE["x"] if value == 1 else (PALETTE["o"] if value == -1 else PALETTE["text"])
 
                 if (bi, bj) in playable_boards:
-                    btn.background_color = (
-                        PALETTE["board_playable_light"] if is_light else PALETTE["board_playable_dark"]
-                    )
+                    btn.background_color = PALETTE["board_playable"]
                 else:
-                    btn.background_color = (
-                        PALETTE["board_blocked_light"] if is_light else PALETTE["board_blocked_dark"]
-                    )
+                    btn.background_color = PALETTE["board_blocked"]
 
     def show_result(self):
         winner = self.game.check_true_win()
@@ -273,7 +224,6 @@ class UTTTApp(App):
 
         self.opponent_type = "table"
         self.cnn_option = "A"
-        self.model_cache = {}
 
         self.screen_manager = ScreenManager(transition=FadeTransition(duration=0.22))
         self.screen_manager.add_widget(self.build_intro_screen())
@@ -289,7 +239,7 @@ class UTTTApp(App):
             size_hint=(1, 0.26),
             padding=dp(18),
             spacing=dp(8),
-            fill=PALETTE["surface_highlight"],
+            fill=PALETTE["panel_alt"],
         )
         hero.add_widget(
             Label(
@@ -312,7 +262,7 @@ class UTTTApp(App):
             size_hint=(1, 0.74),
             padding=dp(16),
             spacing=dp(10),
-            fill=PALETTE["surface"],
+            fill=PALETTE["panel"],
         )
         options.add_widget(
             Label(
@@ -328,15 +278,13 @@ class UTTTApp(App):
         qtable_btn = ThemedButton(
             text="Play vs Q-Table",
             font_size=20,
-            fill=PALETTE["button_green"],
-            border=PALETTE["button_green_border"],
+            fill=PALETTE["button_alt"],
         )
         qtable_btn.bind(on_release=lambda _x: self.start_game("table"))
         api_btn = ThemedButton(
             text="Play vs API",
             font_size=20,
-            fill=PALETTE["button_blue"],
-            border=PALETTE["button_blue_border"],
+            fill=PALETTE["button"],
         )
         api_btn.bind(on_release=lambda _x: self.start_game("api"))
         quick_row.add_widget(qtable_btn)
@@ -354,9 +302,8 @@ class UTTTApp(App):
 
         cnn_grid = GridLayout(cols=3, size_hint=(1, 0.50), spacing=dp(8))
         for i, option in enumerate(self.CNN_OPTIONS):
-            fill = PALETTE["button_blue"] if i % 2 == 0 else PALETTE["button_teal"]
-            border = PALETTE["button_blue_border"] if i % 2 == 0 else PALETTE["button_teal_border"]
-            btn = ThemedButton(text=f"CNN {option}", font_size=20, fill=fill, border=border)
+            fill = PALETTE["button"] if i % 2 == 0 else PALETTE["button_alt"]
+            btn = ThemedButton(text=f"CNN {option}", font_size=20, fill=fill)
             btn.bind(on_release=lambda _x, m=option: self.start_game("cnn", m))
             cnn_grid.add_widget(btn)
         cnn_grid.add_widget(Widget())
@@ -385,15 +332,14 @@ class UTTTApp(App):
             size_hint=(1, 0.11),
             spacing=dp(8),
             padding=dp(8),
-            fill=PALETTE["surface_highlight"],
+            fill=PALETTE["panel_alt"],
         )
 
         menu_btn = ThemedButton(
             text="Menu",
             size_hint=(0.17, 1),
             font_size=18,
-            fill=PALETTE["button_blue"],
-            border=PALETTE["button_blue_border"],
+            fill=PALETTE["button"],
         )
         menu_btn.bind(on_release=self.back_to_intro)
 
@@ -401,8 +347,7 @@ class UTTTApp(App):
             text="Reset",
             size_hint=(0.17, 1),
             font_size=18,
-            fill=PALETTE["button_green"],
-            border=PALETTE["button_green_border"],
+            fill=PALETTE["button_alt"],
         )
         reset_btn.bind(on_release=self.reset_game)
 
@@ -422,7 +367,7 @@ class UTTTApp(App):
             orientation="vertical",
             size_hint=(1, 0.89),
             padding=dp(10),
-            fill=PALETTE["surface_alt"],
+            fill=PALETTE["panel"],
         )
 
         temp_game = UltimateTicTacToeGame()
@@ -464,11 +409,7 @@ class UTTTApp(App):
         if self.opponent_type in {"table", "api"}:
             self.game = UltimateTicTacToeGame()
         else:
-            cached = self.model_cache.get(self.cnn_option)
-            if cached is None:
-                model, device = load_model(self.cnn_option)
-                self.model_cache[self.cnn_option] = (model, device)
-            model, device = self.model_cache[self.cnn_option]
+            model, device = load_model(self.cnn_option)
 
             self.game = UltimateTicTacToeCNN(
                 model=model,

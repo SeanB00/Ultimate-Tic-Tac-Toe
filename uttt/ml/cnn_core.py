@@ -25,13 +25,12 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from uttt.paths import CNN_RUNS_DIR, ensure_project_dirs
 
-DEFAULT_USE_MEMMAP = False
+#TRAINING CONFIG
 DEFAULT_LOG_EVERY = 100
 DEFAULT_AUTO_RESUME = True
 DEFAULT_EARLY_STOPPING_PATIENCE = 3
 DEFAULT_EARLY_STOPPING_MIN_DELTA = 5e-5
-
-TRAINING_NAME = "Mixed"
+TRAINING_NAME = "mixed"
 TRAIN_MODEL_OPTION = "D"
 TRAIN_EPOCHS = 15
 TRAIN_LR = 1e-4
@@ -238,11 +237,10 @@ def load_trained_model(
 class NpyDataset(Dataset):
     """Loads (N,9,9) board arrays and scalar targets from NumPy files."""
 
-    def __init__(self, x_path, y_path, use_memmap = True):
+    def __init__(self, x_path, y_path):
         """Initialize the NpyDataset instance."""
-        mmap_mode = "r" if use_memmap else None
-        self.X = np.load(x_path, mmap_mode=mmap_mode)
-        self.y = np.load(y_path, mmap_mode=mmap_mode)
+        self.X = np.load(x_path)
+        self.y = np.load(y_path)
 
         if self.X.ndim != 3 or self.X.shape[1:] != (9, 9):
             raise ValueError(f"Unexpected X shape: {self.X.shape}, expected (N, 9, 9)")
@@ -273,10 +271,9 @@ def build_npy_dataloaders(
     seed,
     num_workers,
     device,
-    use_memmap = True,
 ):
     """Build npy dataloaders."""
-    dataset = NpyDataset(x_path, y_path, use_memmap=use_memmap)
+    dataset = NpyDataset(x_path, y_path)
     n = len(dataset)
     if n < 10:
         raise RuntimeError(f"Dataset too small: N={n}")

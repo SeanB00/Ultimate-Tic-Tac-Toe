@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 
 from uttt.game.logic import UltimateTicTacToeGame
-from uttt.ml.cnn_core import load_trained_model
+import uttt.ml.cnn_core as cnn_core
 
 
 # ============================================================
@@ -107,13 +107,13 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
     #     self.apply_player_move(*best_move)
 
 def load_model(model_option: str):
-    return load_trained_model(model_option=model_option)
+    return cnn_core.load_trained_model(model_option=model_option)
 
 # ============================================================
 # OPTIONAL: QUICK EVAL HARNESS (kept from your file)
 # ============================================================
 
-def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int = 2000):
+def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int = 2000, random_player: bool = True):
 
 
     agent_w = 0
@@ -127,7 +127,7 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
         q_table={},
         training=False,
         multiprocess=False,
-        randomPlayer=True
+        randomPlayer=random_player
     )
 
 
@@ -154,6 +154,8 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
         print("No moves tracked.")
 
     return agent_w, player_w, ties
+
+
 
 
 def test_evaluations(model_option: str):
@@ -183,7 +185,8 @@ def test_evaluations(model_option: str):
 
 
 if __name__ == "__main__":
-    test_evaluations("E")
+    test_evaluations("C")
     for model_option in ["A","B","C","D","E"]:
         model, device = load_model(model_option)
-        play_games(model, device, mode="pure_cnn", n_games=2000)
+        #play_games(model, device, mode="pure_cnn", n_games=200)
+        play_games(model, device, mode="random", n_games=1000)
