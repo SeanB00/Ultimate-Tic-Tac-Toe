@@ -1,7 +1,6 @@
-# CNN_utils.py
-# (CNN play/eval utilities + Kivy integration)
+# cnn play and eval utilities
 
-# --- OpenMP duplicate runtime workaround (Windows + torch/numpy/mkl)
+# openmp runtime workaround
 import os
 import sys
 from pathlib import Path
@@ -21,46 +20,35 @@ from uttt.game.logic import UltimateTicTacToeGame
 import uttt.ml.cnn_core as cnn_core
 
 
-# ============================================================
-# =============== CNN-BASED AGENT SUBCLASS ===================
-# ============================================================
-
 class UltimateTicTacToeCNN(UltimateTicTacToeGame):
-    """Subclass that chooses agent moves based on a trained CNN value function."""
+    """pick agent moves with a cnn value model."""
 
     def __init__(self, model: nn .Module, device: torch.device, mode: str, **kwargs):
+        """store the cnn model and mode."""
         super().__init__(**kwargs)
         self.model = model
         self.device = device
-        self.mode = mode  # "pure_cnn", "heuristic", "random"
+        self.mode = mode
         self.model.eval()
 
-    # -----------------------------
-    # Board -> tensor (1 channel)
-    # -----------------------------
     def board_to_tensor(self, board9x9: np.ndarray) -> torch.Tensor:
-        # single-channel tensor with values in {-1,0,1}
-        x = torch.from_numpy(board9x9.astype(np.float32).reshape((1,1,9,9)))
+        """convert a board into a model tensor."""
+        x = torch.from_numpy(board9x9.astype(np.float32).reshape((1, 1, 9, 9)))
         return x.to(self.device)
 
     @torch.no_grad()
     def value_of_board(self, board9x9: np.ndarray) -> float:
+        """score one board with the cnn."""
         x = self.board_to_tensor(board9x9)
         v = self.model(x).item()
-
-
         return float(v)
 
-    # -----------------------------
-    # CNN-based best move
-    # -----------------------------
     def best_from_moves(self, moves):
-
+        """pick the highest-value move."""
         best = None
         best_score = -1e30
 
         for bi, bj, r, c in moves:
-            # apply move on board_rep temporarily
             self.place_in_rep(bi, bj, r, c, self.agent_symbol)
             score = self.value_of_board(self.board_rep)
             self.place_in_rep(bi, bj, r, c, 0)
@@ -68,25 +56,18 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
             if score > best_score:
                 best_score = score
                 best = (bi, bj, r, c)
-
-
-
         return best
 
-    # -----------------------------
-    # Agent move selection
-    # -----------------------------
-
     def agent_smart_move(self):
-        """Pick and apply the CNN agent move."""
+        """pick and apply the cnn move."""
         if self.mode == "heuristic":
             super().agent_smart_move()
             return
 
-        all_moves = self.get_available_moves()
+        all_moves = self.legal_moves()
 
         if self.mode == "random":
-            self.apply_agent_move(*random.choice(all_moves))
+            self.apply_move(*random.choice(all_moves), self.agent_symbol)
             return
 
         if self.mode != "pure_cnn":
@@ -96,25 +77,15 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
         if best is None:
             self.random_plays += 1
             best = random.choice(all_moves)
-        self.apply_agent_move(*best)
+        self.apply_move(*best, self.agent_symbol)
         return
 
-    # def player_smart_move(self):
-    #     moves = self.get_available_moves()
-    #     self.board_rep *= -1
-    #     best_move = self.best_from_moves(moves)
-    #     self.board_rep *= -1
-    #     self.apply_player_move(*best_move)
-
 def load_model(model_option: str):
+    """load one trained cnn model."""
     return cnn_core.load_trained_model(model_option=model_option)
 
-# ============================================================
-# OPTIONAL: QUICK EVAL HARNESS (kept from your file)
-# ============================================================
-
 def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int = 2000, random_player: bool = True):
-
+    """play repeated games for quick evaluation."""
 
     agent_w = 0
     player_w = 0
@@ -127,13 +98,11 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
         q_table={},
         training=False,
         multiprocess=False,
-        randomPlayer=random_player
+        random_player=random_player
     )
-
-
     for _ in range(n_games):
-        if _%10==0:
-            print(f"Game {_}")
+        if _ % 10 == 0:
+            print(f"game {_}")
         game.play_one_game(epsilon=0, training=False)
         w = game.check_true_win()
         if w == 1:
@@ -144,22 +113,18 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
             ties += 1
 
     total = n_games
-    print(f"\n=== MODE: {mode} ===")
-    print(f"Agent win % : {100.0 * agent_w / total:.2f}")
-    print(f"Player win %: {100.0 * player_w / total:.2f}")
-    print(f"Tie %      : {100.0 * ties / total:.2f}")
+    print(f"mode: {mode}")
+    print(f"agent win %: {100.0 * agent_w / total:.2f}")
+    print(f"player win %: {100.0 * player_w / total:.2f}")
+    print(f"tie %: {100.0 * ties / total:.2f}")
     if getattr(game, "num_plays", 0) > 0:
-        print(f"Fallback random % (if any): {100.0 * game.random_plays / game.num_plays:.3f}")
+        print(f"fallback random %: {100.0 * game.random_plays / game.num_plays:.3f}")
     else:
-        print("No moves tracked.")
+        print("no moves tracked")
 
     return agent_w, player_w, ties
-
-
-
-
 def test_evaluations(model_option: str):
-    """This function takes an end game board and tests if model outputs 1/-1 for it"""
+    """print cnn values for one sampled finished game."""
 
     model, device = load_model(model_option)
     game = UltimateTicTacToeCNN(
@@ -169,24 +134,16 @@ def test_evaluations(model_option: str):
         q_table={},
         training=False,
         multiprocess=False,
-        randomPlayer=True
+        random_player=True
     )
     boards = game.play_one_game(training=False)
     win = game.check_true_win()
-    print(f"Win: {win}")
+    print(f"win: {win}")
     for board in boards:
-
-        print(game.value_of_board(game.get_board_from_int(board)))
-
-
-
-
-
-
+        print(game.value_of_board(UltimateTicTacToeGame.get_board_from_int(board)))
 
 if __name__ == "__main__":
     test_evaluations("C")
-    for model_option in ["A","B","C","D","E"]:
+    for model_option in ["A", "B", "C", "D", "E"]:
         model, device = load_model(model_option)
-        #play_games(model, device, mode="pure_cnn", n_games=200)
         play_games(model, device, mode="random", n_games=1000)

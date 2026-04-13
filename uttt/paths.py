@@ -1,4 +1,4 @@
-"""Shared filesystem paths for the Ultimate Tic-Tac-Toe project."""
+"""shared filesystem paths for the project."""
 
 from pathlib import Path
 
@@ -12,17 +12,17 @@ ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 FIXED_QTABLE_PATH = QTABLE_DIR / "fixed_qtable.lmdb"
 SHRUNK_QTABLE_PATH = QTABLE_DIR / "qtable_shrink.lmdb"
 
-EXPANDED_X_PATH = PROCESSED_DATA_DIR / "expanded_X_min2_.npy"
-EXPANDED_Y_PATH = PROCESSED_DATA_DIR / "expanded_y_min2_.npy"
-EXPANDED_META_PATH = PROCESSED_DATA_DIR / "expanded_meta_min2.json"
+FILTERED_X_PATH = PROCESSED_DATA_DIR / "filtered_X.npy"
+FILTERED_Y_PATH = PROCESSED_DATA_DIR / "filtered_y.npy"
+FILTERED_META_PATH = PROCESSED_DATA_DIR / "filtered_meta.json"
 
-MIXED_X_PATH = PROCESSED_DATA_DIR / "mixed_X_v1.npy"
-MIXED_Y_PATH = PROCESSED_DATA_DIR / "mixed_y_v1.npy"
-MIXED_META_PATH = PROCESSED_DATA_DIR / "mixed_meta_v1.json"
+MIXED_X_PATH = PROCESSED_DATA_DIR / "mixed_X.npy"
+MIXED_Y_PATH = PROCESSED_DATA_DIR / "mixed_y.npy"
+MIXED_META_PATH = PROCESSED_DATA_DIR / "mixed_meta.json"
 
 
 def ensure_project_dirs() -> None:
-    """Create the standard writable project directories if they are missing."""
+    """create the standard project directories."""
     for path in (
         QTABLE_DIR,
         PROCESSED_DATA_DIR,

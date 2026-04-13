@@ -43,6 +43,7 @@ PALETTE = {
 
 class GradientPane(BoxLayout):
     def __init__(self, **kwargs):
+        """build the gradient background pane."""
         super().__init__(**kwargs)
         with self.canvas.before:
             Color(rgba=PALETTE["window_bg"])
@@ -51,12 +52,14 @@ class GradientPane(BoxLayout):
         self.update_background()
 
     def update_background(self, *_args):
+        """resize the background rectangle."""
         self.bg_rect.pos = self.pos
         self.bg_rect.size = self.size
 
 
 class SurfaceCard(BoxLayout):
     def __init__(self, fill=None, **kwargs):
+        """build a filled panel card."""
         super().__init__(**kwargs)
         self.fill = fill if fill is not None else PALETTE["panel"]
 
@@ -68,12 +71,14 @@ class SurfaceCard(BoxLayout):
         self.update_graphics()
 
     def update_graphics(self, *_args):
+        """resize the panel background."""
         self.fill_rect.pos = self.pos
         self.fill_rect.size = self.size
 
 
 class ThemedButton(Button):
     def __init__(self, fill=None, border=None, text_color=None, radius=14, **kwargs):
+        """build a themed button."""
         super().__init__(**kwargs)
         self.fill = fill if fill is not None else PALETTE["button"]
         self.background_normal = ""
@@ -85,6 +90,7 @@ class ThemedButton(Button):
 
 class CellButton(Button):
     def __init__(self, global_r, global_c, **kwargs):
+        """build one board cell button."""
         super().__init__(**kwargs)
         self.global_r = global_r
         self.global_c = global_c
@@ -101,6 +107,7 @@ class BoardGrid(GridLayout):
     app = ObjectProperty(None)
 
     def __init__(self, game, status_label, app, **kwargs):
+        """build the board grid."""
         super().__init__(**kwargs)
         self.cols = 9
         self.rows = 9
@@ -128,6 +135,7 @@ class BoardGrid(GridLayout):
         self.update_grid_lines()
 
     def on_cell_pressed(self, btn):
+        """handle one player click."""
         if not self.game.is_game_running():
             return
 
@@ -146,7 +154,7 @@ class BoardGrid(GridLayout):
         elif self.game.curr_board != (bi, bj):
             return
 
-        self.game.apply_player_move(bi, bj, r, c)
+        self.game.apply_move(bi, bj, r, c, self.game.player_symbol)
         self.refresh()
 
         if not self.game.is_game_running():
@@ -164,7 +172,8 @@ class BoardGrid(GridLayout):
             self.show_result()
 
     def refresh(self):
-        board = self.game.global_board()
+        """redraw the board state."""
+        board = self.game.board_rep
         playable_boards = self.game.get_playable_boards() if self.game.is_game_running() else set()
 
         for r in range(9):
@@ -190,6 +199,7 @@ class BoardGrid(GridLayout):
                     btn.background_color = PALETTE["board_blocked"]
 
     def show_result(self):
+        """show the final result text."""
         winner = self.game.check_true_win()
         if winner == 1:
             self.status_label.text = "X (AI) wins!"
@@ -202,6 +212,7 @@ class BoardGrid(GridLayout):
             self.status_label.color = PALETTE["text_muted"]
 
     def update_grid_lines(self, *_args):
+        """draw the board grid lines."""
         self.canvas.after.clear()
         with self.canvas.after:
             Color(rgba=PALETTE["grid_line"])
@@ -219,6 +230,7 @@ class UTTTApp(App):
     CNN_OPTIONS = ["A", "B", "C", "D", "E"]
 
     def build(self):
+        """build the app root."""
         Window.size = (860, 900)
         Window.clearcolor = PALETTE["window_bg"]
 
@@ -231,6 +243,7 @@ class UTTTApp(App):
         return self.screen_manager
 
     def build_intro_screen(self):
+        """build the intro screen."""
         screen = Screen(name="intro")
         root = GradientPane(orientation="vertical", padding=dp(22), spacing=dp(14))
 
@@ -324,6 +337,7 @@ class UTTTApp(App):
         return screen
 
     def build_game_screen(self):
+        """build the game screen."""
         screen = Screen(name="game")
         root = GradientPane(orientation="vertical", padding=dp(12), spacing=dp(10))
 
@@ -381,6 +395,7 @@ class UTTTApp(App):
         return screen
 
     def mode_label(self):
+        """return the current mode label."""
         if self.opponent_type == "table":
             return "Q-Table"
         if self.opponent_type == "api":
@@ -388,6 +403,7 @@ class UTTTApp(App):
         return f"CNN {self.cnn_option}"
 
     def start_game(self, opponent_type, cnn_option=None):
+        """start a new game in the chosen mode."""
         self.opponent_type = opponent_type
         if cnn_option is not None:
             self.cnn_option = cnn_option
@@ -397,15 +413,18 @@ class UTTTApp(App):
         self.screen_manager.current = "game"
 
     def back_to_intro(self, *_args):
+        """return to the intro screen."""
         self.screen_manager.current = "intro"
 
     def reset_game(self, *_args):
+        """reset the current game."""
         if not hasattr(self, "game"):
             return
         self.init_game_instance()
         self.activate_game_board()
 
     def init_game_instance(self):
+        """create the current game object."""
         if self.opponent_type in {"table", "api"}:
             self.game = UltimateTicTacToeGame()
         else:
@@ -422,6 +441,7 @@ class UTTTApp(App):
         self.game.init_game()
 
     def activate_game_board(self):
+        """bind the current game to the board view."""
         self.board_grid.game = self.game
         self.board_grid.refresh()
         self.status_label.text = f"Mode: {self.mode_label()}"
@@ -439,6 +459,7 @@ class UTTTApp(App):
             self.board_grid.show_result()
 
     def play_ai_turn(self):
+        """let the current ai make one move."""
         if self.opponent_type == "table":
             used_qtable = self.game.agent_smart_move()
             return "Q-table move" if used_qtable else "Random fallback move"
@@ -455,8 +476,8 @@ class UTTTApp(App):
                 gr, gc = move
                 bi, r = divmod(gr, 3)
                 bj, c = divmod(gc, 3)
-                if (bi, bj, r, c) in self.game.get_available_moves():
-                    self.game.apply_agent_move(bi, bj, r, c)
+                if (bi, bj, r, c) in self.game.legal_moves():
+                    self.game.apply_move(bi, bj, r, c, self.game.agent_symbol)
                     return "API move"
 
             self.game.agent_smart_move()

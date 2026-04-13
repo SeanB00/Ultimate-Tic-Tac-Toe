@@ -19,13 +19,7 @@ GLOBAL_TXN = None
 
 
 class LMDBQTable:
-    """
-    LMDB-backed dict-like object for Q-table:
-        - q[state_int] -> (value, count)
-        - q[state_int] = (value, count)
-        - state_int in q
-        - q.get(state_int, default)
-    """
+    """store q-table values in lmdb."""
 
     def __init__(
         self,
@@ -36,6 +30,7 @@ class LMDBQTable:
         readahead=False,
         max_readers=4096,
     ):
+        """open the lmdb environment."""
         self.path = os.fspath(path)
         self.env = lmdb.open(
             self.path,
@@ -48,47 +43,59 @@ class LMDBQTable:
             writemap=False,
         )
 
-    # ---------- helpers ----------
+    # helpers
     def begin_read(self):
+        """start a read transaction."""
         return self.env.begin(write=False)
 
     def close(self):
+        """close the environment."""
         self.env.close()
 
     def key_bytes(self, state_int: int) -> bytes:
+        """encode a state id as key bytes."""
         return state_int.to_bytes(KEY_BYTES, "big", signed=False)
 
     def state_int_from_key(self, key: bytes) -> int:
+        """decode a key into a state id."""
         return int.from_bytes(key, "big", signed=False)
 
     def key_is_valid(self, key: bytes) -> bool:
+        """check key length."""
         return len(key) == KEY_BYTES
 
     def value_is_valid(self, data: bytes) -> bool:
+        """check value length."""
         return len(data) == VALUE_SIZE
 
     def decode_value(self, data: bytes):
+        """decode a value payload."""
         return struct.unpack(VALUE_FMT, data)
 
     def encode_value(self, val: float, count: int) -> bytes:
+        """encode a value payload."""
         return struct.pack(VALUE_FMT, val, count)
 
     def decode_entry(self, key: bytes, data: bytes):
+        """decode one raw lmdb entry."""
         if not self.key_is_valid(key):
-            raise ValueError(f"Expected {KEY_BYTES} key bytes, got {len(key)}")
+            raise ValueError(f"expected {KEY_BYTES} key bytes, got {len(key)}")
         if not self.value_is_valid(data):
-            raise ValueError(f"Expected {VALUE_SIZE} value bytes, got {len(data)}")
+            raise ValueError(f"expected {VALUE_SIZE} value bytes, got {len(data)}")
         state_int = self.state_int_from_key(key)
         q_value, visits = self.decode_value(data)
         return state_int, q_value, visits
 
     def decode_board_from_state_int(self, state_int: int):
+        """decode a state id into a board."""
         return hashing.decode_board_from_int(state_int)
 
     def decode_board_from_key(self, key: bytes):
+        """decode a raw key into a board."""
         return self.decode_board_from_state_int(self.state_int_from_key(key))
 
     def iter_raw_items(self, max_entries=None, txn=None):
+        """yield raw lmdb key-value pairs."""
         if txn is None:
             with self.begin_read() as read_txn:
                 yield from self.iter_raw_items(max_entries=max_entries, txn=read_txn)
@@ -101,25 +108,31 @@ class LMDBQTable:
             yield key, data
 
     def iter_entries(self, max_entries=None, txn=None):
+        """yield decoded lmdb entries."""
         for key, data in self.iter_raw_items(max_entries=max_entries, txn=txn):
             if not self.key_is_valid(key) or not self.value_is_valid(data):
                 continue
             yield self.decode_entry(key, data)
 
     def info(self):
+        """return lmdb environment info."""
         return self.env.info()
 
     def stat(self):
+        """return lmdb stats."""
         with self.begin_read() as txn:
             return txn.stat()
 
     def page_size(self):
+        """return the lmdb page size."""
         return self.env.stat()["psize"]
 
     def copy(self, dst, compact=False):
+        """copy the database to another file."""
         self.env.copy(os.fspath(dst), compact=compact)
 
     def read_bytes(self, state_int: int, txn=None):
+        """read raw value bytes for a state."""
         key = self.key_bytes(state_int)
 
         if txn is not None:
@@ -129,32 +142,35 @@ class LMDBQTable:
         with self.begin_read() as read_txn:
             return read_txn.get(key)
 
-    # ---------- dict-like API ----------
+    # dict-like api
     def __contains__(self, state_int: int) -> bool:
+        """check whether a state exists."""
         return self.read_bytes(state_int) is not None
 
     def __getitem__(self, state_int: int):
+        """read one state value."""
         data = self.read_bytes(state_int)
         if data is None:
             raise KeyError(state_int)
         return self.decode_value(data)
 
     def get(self, state_int: int, default=None):
+        """read one state value with a default."""
         data = self.read_bytes(state_int)
         if data is None:
             return default
         return self.decode_value(data)
 
     def __setitem__(self, state_int: int, value_tuple):
-        """Writes stay the same; this opens a write txn."""
+        """write one state value."""
         val, count = value_tuple
         key = self.key_bytes(state_int)
         with self.env.begin(write=True) as txn:
             txn.put(key, self.encode_value(val, count))
 
-    # ---------- training APIs ----------
+    # training api
     def update_from_targets(self, board_score_list):
-        """Single-process write. Safe."""
+        """merge one game's targets into the table."""
         with self.env.begin(write=True) as txn:
             for state_int, target in board_score_list:
                 key = self.key_bytes(state_int)
@@ -170,7 +186,7 @@ class LMDBQTable:
                 txn.put(key, self.encode_value(new_v, new_count))
 
     def batch_merge_local_q(self, local_q):
-        """Write-only, safe."""
+        """merge worker-local averages into the table."""
         with self.env.begin(write=True) as txn:
             for state_int, (avg_local, count_local) in local_q.items():
                 key = self.key_bytes(state_int)

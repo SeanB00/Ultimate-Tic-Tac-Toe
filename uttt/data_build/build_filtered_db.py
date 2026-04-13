@@ -1,27 +1,16 @@
-"""
-Filter LMDB states by minimum visit count, expand each kept state by all 8
-UTTT symmetries, and save two NumPy files:
-
-- X.npy -> shape (N, 9, 9), dtype float32
-- y.npy -> shape (N,), dtype float32
-
-This version preallocates the final arrays in RAM:
-1) First pass counts states with visits >= MIN_VISITS
-2) Allocate the exact final NumPy arrays
-3) Second pass fills them directly
-4) Save at the end
-"""
+"""build the filtered dataset from lmdb states with enough visits."""
 
 import sys
 import time
 from pathlib import Path
+
 import numpy as np
 
 from uttt.game.logic import UltimateTicTacToeGame
 from uttt.game.lmdb_qtable import VALUE_FMT, LMDBQTable
 from uttt.paths import (
-    EXPANDED_X_PATH,
-    EXPANDED_Y_PATH,
+    FILTERED_X_PATH,
+    FILTERED_Y_PATH,
     FIXED_QTABLE_PATH,
     ensure_project_dirs,
 )
@@ -32,17 +21,16 @@ PROGRESS_EVERY = 250_000
 
 
 def main():
+    """build and save the filtered numpy arrays."""
     ensure_project_dirs()
-    print("=== LMDB -> Expanded NumPy (preallocated RAM mode) ===")
-    print(f"LMDB_PATH      : {FIXED_QTABLE_PATH}")
-    print(f"OUT_X_PATH     : {EXPANDED_X_PATH}")
-    print(f"OUT_Y_PATH     : {EXPANDED_Y_PATH}")
-    print(f"MIN_VISITS     : {MIN_VISITS}")
-    print(f"VALUE_FMT      : {VALUE_FMT}")
+    print("building filtered numpy data")
+    print(f"lmdb_path: {FIXED_QTABLE_PATH}")
+    print(f"out_x_path: {FILTERED_X_PATH}")
+    print(f"out_y_path: {FILTERED_Y_PATH}")
+    print(f"min_visits: {MIN_VISITS}")
+    print(f"value_fmt: {VALUE_FMT}")
 
     qtable = LMDBQTable(path=FIXED_QTABLE_PATH, readonly=True, lock=False, max_readers=1)
-
-    game = UltimateTicTacToeGame(q_table={}, training=False, multiprocess=False)
 
     scanned = 0
     kept_states = 0
@@ -55,7 +43,7 @@ def main():
                 if PROGRESS_EVERY > 0 and scanned % PROGRESS_EVERY == 0:
                     dt = max(time.time() - t0, 1e-9)
                     print(
-                        f"[count] scanned={scanned:,} kept_states={kept_states:,} "
+                        f"count scan: scanned={scanned:,} kept_states={kept_states:,} "
                         f"speed={scanned/dt:,.0f} rows/sec"
                     )
 
@@ -70,10 +58,10 @@ def main():
 
     expanded_rows = kept_states * 8
     if expanded_rows == 0:
-        print("[done] No rows passed filtering. Nothing saved.")
+        print("no rows passed filtering")
         return
 
-    print(f"[alloc] Allocating X/y for {expanded_rows:,} expanded rows...")
+    print(f"allocating x and y for {expanded_rows:,} expanded rows")
     X = np.empty((expanded_rows, 9, 9), dtype=np.float32)
     y = np.empty((expanded_rows,), dtype=np.float32)
 
@@ -87,7 +75,7 @@ def main():
                 if PROGRESS_EVERY > 0 and scanned_fill % PROGRESS_EVERY == 0:
                     dt = max(time.time() - t0, 1e-9)
                     print(
-                        f"[fill] scanned={scanned_fill:,} written_rows={write_idx:,} "
+                        f"fill scan: scanned={scanned_fill:,} written_rows={write_idx:,} "
                         f"speed={scanned_fill/dt:,.0f} rows/sec"
                     )
 
@@ -97,7 +85,7 @@ def main():
                     continue
 
                 board = np.array(qtable.decode_board_from_state_int(state_int), dtype=np.int8).reshape(9, 9)
-                for sym in game.all_symmetries_fast(board):
+                for sym in UltimateTicTacToeGame.all_symmetries_fast(board):
                     X[write_idx] = np.asarray(sym, dtype=np.float32)
                     y[write_idx] = np.float32(q)
                     write_idx += 1
@@ -105,18 +93,19 @@ def main():
         qtable.close()
 
     if write_idx != expanded_rows:
-        raise RuntimeError(f"Row mismatch: wrote {write_idx}, expected {expanded_rows}")
+        raise RuntimeError(f"row mismatch: wrote {write_idx}, expected {expanded_rows}")
 
-    print("[save] Writing X/y .npy files...")
-    np.save(EXPANDED_X_PATH, X)
-    np.save(EXPANDED_Y_PATH, y)
+    np.save(FILTERED_X_PATH, X)
+    np.save(FILTERED_Y_PATH, y)
 
     dt = time.time() - t0
+    print(f"saved x to {FILTERED_X_PATH}")
+    print(f"saved y to {FILTERED_Y_PATH}")
     print(
-        f"[done] scanned={scanned:,}, kept_states={kept_states:,}, expanded_rows={expanded_rows:,}, "
+        f"scanned={scanned:,}, kept_states={kept_states:,}, expanded_rows={expanded_rows:,}, "
         f"secs={dt:.2f}"
     )
-    print(f"[done] X shape={X.shape}, y shape={y.shape}")
+    print(f"x shape={X.shape}, y shape={y.shape}")
 
 
 if __name__ == "__main__":

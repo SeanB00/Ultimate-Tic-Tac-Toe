@@ -21,7 +21,7 @@ import numpy as np
 
 a = np.zeros((5,5),dtype="int8")
 print(a, end="\n\n")
-
+print({2: 5,1: 6}.values())
 
 a= a[1:3,2:5]
 print(a)

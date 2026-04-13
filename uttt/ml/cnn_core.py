@@ -1,6 +1,6 @@
-"""Shared CNN components for Ultimate Tic-Tac-Toe training/inference."""
+"""shared cnn components for training and inference."""
 
-# OpenMP duplicate runtime workaround (Windows + torch/numpy/mkl)
+# openmp runtime workaround
 import os
 import sys
 from pathlib import Path
@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from uttt.paths import CNN_RUNS_DIR, ensure_project_dirs
 
-#TRAINING CONFIG
+# training config
 DEFAULT_LOG_EVERY = 100
 DEFAULT_AUTO_RESUME = True
 DEFAULT_EARLY_STOPPING_PATIENCE = 3
@@ -36,16 +36,16 @@ TRAIN_EPOCHS = 15
 TRAIN_LR = 1e-4
 
 def pick_device():
-    """Execute pick device."""
+    """pick the torch device."""
     if torch.cuda.is_available():
-        print(">>> Using CUDA GPU")
+        print("using cuda gpu")
         return torch.device("cuda")
 
-    print(">>> Using CPU")
+    print("using cpu")
     return torch.device("cpu")
 
 def act(name):
-    """Execute act."""
+    """build an activation layer."""
     name = name.lower()
     if name == "relu":
         return nn.ReLU(inplace=True)
@@ -65,11 +65,11 @@ def act(name):
         return nn.Hardswish()
     if name == "softplus":
         return nn.Softplus()
-    raise ValueError(f"Unknown activation: {name}")
+    raise ValueError(f"unknown activation: {name}")
 
 class ModelA(nn.Module):
     def __init__(self, in_ch = 1):
-        """Initialize the ModelA instance."""
+        """build model a."""
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1, bias=False),
@@ -90,13 +90,13 @@ class ModelA(nn.Module):
         )
 
     def forward(self, x):
-        """Execute forward."""
+        """run the forward pass."""
         x = self.conv(x)
         return self.fc(x).squeeze(-1)
 
 class ModelB(nn.Module):
     def __init__(self, in_ch = 1):
-        """Initialize the ModelB instance."""
+        """build model b."""
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, 64, 3, padding=1),
@@ -113,13 +113,13 @@ class ModelB(nn.Module):
         )
 
     def forward(self, x):
-        """Execute forward."""
+        """run the forward pass."""
         x = self.conv(x)
         return self.fc(x).squeeze(-1)
 
 class ModelC(nn.Module):
     def __init__(self, in_ch = 1):
-        """Initialize the ModelC instance."""
+        """build model c."""
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, 96, 3, padding=1, bias=False),
@@ -140,13 +140,13 @@ class ModelC(nn.Module):
         )
 
     def forward(self, x):
-        """Execute forward."""
+        """run the forward pass."""
         x = self.conv(x)
         return self.fc(x).squeeze(-1)
 
 class ModelD(nn.Module):
     def __init__(self, in_ch = 1):
-        """Initialize the ModelD instance."""
+        """build model d."""
         super().__init__()
         self.mb = nn.Sequential(
             nn.Conv2d(in_ch, 128, 3, stride=3),
@@ -164,13 +164,13 @@ class ModelD(nn.Module):
         )
 
     def forward(self, x):
-        """Execute forward."""
+        """run the forward pass."""
         x = self.mb(x)
         return self.fc(x).squeeze(-1)
 
 class ModelE(nn.Module):
     def __init__(self, in_ch = 1):
-        """Initialize the ModelE instance."""
+        """build model e."""
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, 48, 3, padding=1, bias=False),
@@ -191,12 +191,12 @@ class ModelE(nn.Module):
         )
 
     def forward(self, x):
-        """Execute forward."""
+        """run the forward pass."""
         x = self.conv(x)
         return self.fc(x).squeeze(-1)
 
 def build_model(option, in_ch = 1):
-    """Build model."""
+    """build a model from its option."""
     option = option.upper()
     if option == "A":
         return ModelA(in_ch=in_ch)
@@ -208,55 +208,53 @@ def build_model(option, in_ch = 1):
         return ModelD(in_ch=in_ch)
     if option == "E":
         return ModelE(in_ch=in_ch)
-    raise ValueError(f"Unknown model option: {option}")
+    raise ValueError(f"unknown model option: {option}")
 
 
 def load_trained_model(
     model_option,
 ):
-    """
-    Load a trained model, preferring the best checkpoint.
-    """
+    """load a trained model."""
     device = pick_device()
-    print(">>> DEVICE:", device)
+    print(f"device: {device}")
 
     model = build_model(model_option)
     paths = model_artifact_paths(model_option)
     path = paths["best_model_path"] if os.path.isfile(paths["best_model_path"]) else paths["model_path"]
-    print(">>> Loading model from:", path)
+    print(f"loading model from: {path}")
     obj = torch.load(path, map_location=device)
     model.load_state_dict(obj["model_state"])
     step = obj.get("step")
     if step is not None:
-        print(">>> Loaded checkpoint step:", step)
+        print(f"checkpoint step: {step}")
 
     model.to(device)
     model.eval()
     return model, device
 
 class NpyDataset(Dataset):
-    """Loads (N,9,9) board arrays and scalar targets from NumPy files."""
+    """load board arrays and scalar targets from numpy files."""
 
     def __init__(self, x_path, y_path):
-        """Initialize the NpyDataset instance."""
+        """load the x and y arrays."""
         self.X = np.load(x_path)
         self.y = np.load(y_path)
 
         if self.X.ndim != 3 or self.X.shape[1:] != (9, 9):
-            raise ValueError(f"Unexpected X shape: {self.X.shape}, expected (N, 9, 9)")
+            raise ValueError(f"unexpected x shape: {self.X.shape}, expected (N, 9, 9)")
         if self.y.ndim != 1 or self.y.shape[0] != self.X.shape[0]:
-            raise ValueError(f"Unexpected y shape: {self.y.shape}, expected ({self.X.shape[0]},)")
+            raise ValueError(f"unexpected y shape: {self.y.shape}, expected ({self.X.shape[0]},)")
 
-        print(f">>> Dataset loaded: N={self.X.shape[0]:,}")
-        print(f">>> X dtype/shape: {self.X.dtype} / {self.X.shape}")
-        print(f">>> y dtype/shape: {self.y.dtype} / {self.y.shape}")
+        print(f"dataset loaded: n={self.X.shape[0]:,}")
+        print(f"x dtype/shape: {self.X.dtype} / {self.X.shape}")
+        print(f"y dtype/shape: {self.y.dtype} / {self.y.shape}")
 
     def __len__(self):
-        """Return the number of items."""
+        """return the number of items."""
         return int(self.X.shape[0])
 
     def __getitem__(self, idx):
-        """Return an item for the given index."""
+        """return one dataset item."""
         x = np.array(self.X[idx], dtype=np.float32, copy=True)
         x = np.expand_dims(x, axis=0)
         y = np.float32(self.y[idx])
@@ -272,11 +270,11 @@ def build_npy_dataloaders(
     num_workers,
     device,
 ):
-    """Build npy dataloaders."""
+    """build dataloaders from numpy arrays."""
     dataset = NpyDataset(x_path, y_path)
     n = len(dataset)
     if n < 10:
-        raise RuntimeError(f"Dataset too small: N={n}")
+        raise RuntimeError(f"dataset too small: n={n}")
 
     if not 0.0 < val_ratio < 1.0:
         raise ValueError(f"val_ratio must be between 0 and 1, got {val_ratio}")
@@ -333,7 +331,7 @@ def build_npy_dataloaders(
     return train_loader, val_loader, test_loader
 
 def evaluate_mse(model, loader, device):
-    """Execute evaluate mse."""
+    """compute mean squared error over one loader."""
     model.eval()
     total_loss = 0.0
     total_count = 0
@@ -354,7 +352,7 @@ def save_mse_plots(
     train_plot_path,
     val_plot_path,
 ):
-    """Save mse plots."""
+    """save training and validation mse plots."""
     plot_title = f"{TRAINING_NAME} {TRAIN_MODEL_OPTION.upper()}"
 
     if history.get("train_mse"):
@@ -380,7 +378,7 @@ def save_mse_plots(
         plt.close()
 
 def model_artifact_paths(model_option):
-    """Return model and plot output paths for a model option."""
+    """return output paths for one model option."""
     model_option = model_option.upper()
     run_dir = os.fspath(CNN_RUNS_DIR)
     return {
@@ -397,7 +395,7 @@ def train_supervised_model(
     val_loader,
     test_loader,
 ):
-    """Train supervised model."""
+    """train one supervised cnn model."""
     model_option = TRAIN_MODEL_OPTION.upper()
     epochs = TRAIN_EPOCHS
     lr = TRAIN_LR
@@ -415,15 +413,14 @@ def train_supervised_model(
     history = {"train_mse": [], "val_mse": []}
 
     def load_history_from_dict(data):
-        """Load history from dict."""
+        """load training history from a checkpoint dict."""
         if not isinstance(data, dict):
             return
-        # Accept both current keys (train_mse/val_mse) and legacy keys (train_loss/val_loss).
         history["train_mse"] = list(data.get("train_mse", data.get("train_loss", [])))
         history["val_mse"] = list(data.get("val_mse", data.get("val_loss", [])))
 
     def best_stats_from_history():
-        """Return best val_mse, its epoch index, and no-improve streak since then."""
+        """rebuild best-val stats from saved history."""
         vals = history["val_mse"]
         if not vals:
             return float("inf"), 0, 0
@@ -441,14 +438,10 @@ def train_supervised_model(
         return replay_best, replay_best_epoch, replay_no_improve
 
     if DEFAULT_AUTO_RESUME and os.path.isfile(paths["model_path"]):
-        print(f">>> Found checkpoint: {paths['model_path']}")
+        print(f"found checkpoint: {paths['model_path']}")
         ckpt = torch.load(paths["model_path"], map_location=device)
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optimizer_state"])
-
-
-        # Prefer step-based schema;
-        # keep epoch fallback for older checkpoints.
         last_step = int(ckpt.get("step", ckpt.get("epoch", 0)))
         start_epoch = last_step + 1
         load_history_from_dict(ckpt.get("history"))
@@ -463,7 +456,7 @@ def train_supervised_model(
             best_val_mse, best_epoch, epochs_no_improve = best_stats_from_history()
 
         print(
-            f">>> Resumed at epoch {start_epoch} "
+            f"resumed at epoch {start_epoch} "
             f"(last_step={last_step}, best_epoch={best_epoch}, no_improve={epochs_no_improve})"
         )
 
@@ -475,8 +468,8 @@ def train_supervised_model(
 
     if start_epoch > epochs:
         print(
-            f">>> No training needed: checkpoint already at epoch {start_epoch - 1}, "
-            f"EPOCHS={epochs}."
+            f"no training needed: checkpoint already at epoch {start_epoch - 1}, "
+            f"epochs={epochs}"
         )
     else:
         for epoch in range(start_epoch, epochs + 1):
@@ -517,7 +510,7 @@ def train_supervised_model(
                 best_val_mse = float(val_mse)
                 best_epoch = epoch
                 epochs_no_improve = 0
-                improved_tag = " [BEST]"
+                improved_tag = " [best]"
                 torch.save(
                     {
                         "model_state": model.state_dict(),
@@ -565,8 +558,8 @@ def train_supervised_model(
 
             if 0 < DEFAULT_EARLY_STOPPING_PATIENCE <= epochs_no_improve:
                 print(
-                    f">>> Early stopping at epoch {epoch}: "
-                    f"no validation improvement for {epochs_no_improve} epochs."
+                    f"early stopping at epoch {epoch}: "
+                    f"no validation improvement for {epochs_no_improve} epochs"
                 )
                 break
 
@@ -580,8 +573,8 @@ def train_supervised_model(
         best_model.eval()
         best_test_mse = evaluate_mse(best_model, test_loader, device)
 
-    print(f">>> Test MSE (last): {last_test_mse:.6f}")
-    print(f">>> Test MSE (best): {best_test_mse:.6f}")
+    print(f"test mse (last): {last_test_mse:.6f}")
+    print(f"test mse (best): {best_test_mse:.6f}")
 
     history["test_mse_last"] = float(last_test_mse)
     history["test_mse_best"] = float(best_test_mse)

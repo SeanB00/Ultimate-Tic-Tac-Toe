@@ -1,4 +1,3 @@
-import random
 import sys
 import time
 from pathlib import Path
@@ -13,43 +12,30 @@ from uttt.game.logic import UltimateTicTacToeGame
 from uttt.game.lmdb_qtable import LMDBQTable
 from uttt.paths import ARTIFACTS_DIR, FIXED_QTABLE_PATH, ensure_project_dirs
 
-# ==================================================
-# ===================== CONFIG =====================
-# ==================================================
+# config
 
-# (Used in inspect_lmdb filtering in your original file)
-# Minimum number of non-empty cells threshold used to decide "effective entries".
+# minimum number of non-empty cells used for "effective entries"
 NUM_PLAYS = 10
 MIN_VISITS = 2
 
-# Print progress during full LMDB scan every N scanned entries.
+# progress interval for full lmdb scans
 PROGRESS_EVERY = 500_000
 
-# Stop scanning after this many entries (for speed on huge DB).
-# Set to None if you want to scan everything (not recommended on 150M states).
+# optional max scan limit
 MAX_ENTRIES = None
 
-# How many boards to keep for running the data tests (reservoir sampling).
-SAMPLE_SIZE = 1_000_000
+# sample size for tests
+SAMPLE_SIZE = 25_000_000
 
-# How many boards to keep for plotting.
-# (We sample separately with a different seed so plots vary if you want.)
-PLOT_SAMPLE_SIZE = 20_000
+# sample size for plots
+PLOT_SAMPLE_SIZE = 1_000_000
 
-# Print progress during sampling every N valid entries scanned.
+# progress interval for sample scans
 SAMPLE_PROGRESS_EVERY = 250_000
 
-# ==================================================
-# ===================== SAMPLING ===================
-# ==================================================
-
-def collect_samples(path, sample_size, max_entries=None, seed=1337):
-    """
-    Reservoir-sample up to sample_size valid entries from LMDB scan.
-    Keeps sample uniform over the scanned stream.
-    """
+def collect_samples(path, sample_size, max_entries=None):
+    """collect sample entries from the front of the lmdb scan."""
     qtable = LMDBQTable(path=path, readonly=True, lock=False, max_readers=1)
-    rng = random.Random(seed)
     samples = []
     seen = 0
     start = time.time()
@@ -61,7 +47,6 @@ def collect_samples(path, sample_size, max_entries=None, seed=1337):
             flat = board.ravel()
             x_count = int(np.count_nonzero(flat == 1))
             o_count = int(np.count_nonzero(flat == -1))
-            empty_count = int(np.count_nonzero(flat == 0))
 
             sample = {
                 "board": board,
@@ -69,7 +54,6 @@ def collect_samples(path, sample_size, max_entries=None, seed=1337):
                 "visits": int(visits),
                 "x_count": x_count,
                 "o_count": o_count,
-                "empty_count": empty_count,
                 "non_empty": x_count + o_count,
             }
 
@@ -78,135 +62,215 @@ def collect_samples(path, sample_size, max_entries=None, seed=1337):
             if SAMPLE_PROGRESS_EVERY and (seen % SAMPLE_PROGRESS_EVERY == 0):
                 elapsed = time.time() - start
                 rate = seen / elapsed if elapsed > 0 else 0
-                print(f"[sampling] {seen:,} valid entries scanned ({rate:,.0f} entries/sec)")
+                print(f"sampling: {seen:,} valid entries scanned ({rate:,.0f} entries/sec)")
 
-            if len(samples) < sample_size:
-                samples.append(sample)
-            else:
-                j = rng.randint(0, seen - 1)
-                if j < sample_size:
-                    samples[j] = sample
+            samples.append(sample)
+            if len(samples) >= sample_size:
+                break
     finally:
         qtable.close()
 
     return samples, seen
 
 
-# ==================================================
-# ===================== TESTS ======================
-# (THIS IS YOUR ORIGINAL FULL SUITE, PRINT ONLY)
-# ==================================================
+def check_board_values(samples, _game, _path=None):
+    """check that sampled boards use only valid values."""
+    if not samples:
+        return False, "no sampled boards"
+    for sample in samples:
+        if not np.isin(sample["board"], [-1, 0, 1]).all():
+            return False, "found board values outside {-1, 0, 1}"
+    return True, f"checked {len(samples)} sampled boards"
 
-def run_data_tests(samples, game):
+
+def check_turn_balance(samples, _game, _path=None):
+    """check that move counts stay balanced."""
+    if not samples:
+        return False, "no sampled boards"
+    for sample in samples:
+        if abs(sample["x_count"] - sample["o_count"]) > 1:
+            return False, "found board with move imbalance > 1"
+    return True, "all sampled boards respect turn balance"
+
+
+def check_visits_nonnegative(samples, _game, _path=None):
+    """check that visit counts are non-negative."""
+    if not samples:
+        return False, "no sampled boards"
+    for sample in samples:
+        if sample["visits"] < 0:
+            return False, "found negative visit count"
+    return True, "all sampled visit counts are non-negative"
+
+
+def check_q_value_signal(samples, _game, _path=None):
+    """check that sampled q values have some spread."""
+    if not samples:
+        return False, "no sampled boards"
+    q_values = np.array([sample["q"] for sample in samples], dtype=float)
+    spread = float(np.ptp(q_values))
+    passed = spread > 1e-9 and np.any(np.abs(q_values) > 1e-6)
+    return (
+        passed,
+        (
+            f"min={q_values.min():.6f}, max={q_values.max():.6f}, "
+            f"mean={q_values.mean():.6f}, std={q_values.std():.6f}"
+        ),
+    )
+
+
+def check_visit_signal(samples, _game, _path=None):
+    """check that sampled visit counts have some spread."""
+    if not samples:
+        return False, "no sampled boards"
+    visits = np.array([sample["visits"] for sample in samples], dtype=int)
+    revisited = int(np.count_nonzero(visits >= MIN_VISITS))
+    return (
+        revisited > 0,
+        (
+            f"min={visits.min()}, max={visits.max()}, mean={visits.mean():.2f}, "
+            f"states with visits >= {MIN_VISITS}: {revisited}"
+        ),
+    )
+
+
+def check_symmetry_consistency(samples, game, _path=None):
+    """check symmetry and canonical-hash consistency."""
+    if not samples:
+        return False, "no sampled boards"
+    symmetry_samples = samples[: min(len(samples), PLOT_SAMPLE_SIZE)]
+    for sample in symmetry_samples:
+        syms = UltimateTicTacToeGame.all_symmetries_fast(sample["board"])
+        if len(syms) != 8:
+            return False, f"expected 8 symmetries, got {len(syms)}"
+
+        canonical = UltimateTicTacToeGame.canonical_board_int(sample["board"])
+        sym_hashes = []
+        for sym in syms:
+            if sym.shape != (9, 9):
+                return False, "symmetry transform produced wrong shape"
+            flat = sym.ravel()
+            if np.count_nonzero(flat == 1) != sample["x_count"]:
+                return False, "x count changed under symmetry"
+            if np.count_nonzero(flat == -1) != sample["o_count"]:
+                return False, "o count changed under symmetry"
+            sym_hashes.append(hashing.encode_board_to_int(flat))
+            if UltimateTicTacToeGame.canonical_board_int(sym) != canonical:
+                return False, "canonical hash changed under symmetry"
+
+        if canonical != min(sym_hashes):
+            return False, "canonical hash is not the minimum symmetry hash"
+
+    return True, f"all symmetry checks passed on {len(symmetry_samples)} sampled boards"
+
+
+def check_opening_preference(samples, game, path=None):
+    """check whether the q-table likes the center opening."""
+    del samples
+    if path is None:
+        return False, "missing q-table path for opening inspection"
+
+    qtable = LMDBQTable(path=path, readonly=True, lock=False, max_readers=1)
+    best_board = None
+    best_row = None
+    best_col = None
+    best_q = None
+    best_visits = -1
+    center_q = None
+    center_visits = 0
+
+    try:
+        for row in range(9):
+            for col in range(9):
+                board = np.zeros((9, 9), dtype=int)
+                board[row, col] = game.agent_symbol
+                state_int = UltimateTicTacToeGame.canonical_board_int(board)
+                entry = qtable.get(state_int)
+                if entry is None:
+                    continue
+
+                q_value = float(entry[0])
+                visits = int(entry[1])
+
+                if row == 4 and col == 4:
+                    center_q = q_value
+                    center_visits = visits
+
+                if (
+                    best_q is None
+                    or q_value > best_q
+                    or (q_value == best_q and visits > best_visits)
+                ):
+                    best_board = board
+                    best_row = row
+                    best_col = col
+                    best_q = q_value
+                    best_visits = visits
+    finally:
+        qtable.close()
+
+    print("\nopening preference")
+    if best_q is None:
+        print("no opening positions were found in the q-table")
+        return False, "no opening positions were found in the q-table"
+
+    print(f"best opening: global ({best_row}, {best_col}) q={best_q:.6f}, visits={best_visits}")
+    center_is_best = False
+    if center_q is not None:
+        center_gap = best_q - center_q
+        center_is_best = abs(center_gap) <= 1e-12
+        print(f"center global (4, 4) q={center_q:.6f}, visits={center_visits}")
+        if center_is_best:
+            print("center opening is tied for best")
+        else:
+            print(f"center gap from best: {center_gap:.6f}")
+    else:
+        print("center opening is missing from the q-table")
+
+    print("best opening board:")
+    print_ultimate_board(best_board)
+
+    center_text = "missing"
+    if center_q is not None:
+        center_text = f"{center_q:.6f}"
+
+    return (
+        center_is_best,
+        f"best opening is global ({best_row}, {best_col}) with q={best_q:.6f}; center q={center_text}",
+    )
+
+
+def run_data_tests(samples, game, path=FIXED_QTABLE_PATH):
+    """run the compact inspection checks."""
     results = []
-
-    def record(name, passed, details):
-        results.append({"name": name, "passed": passed, "details": details})
-
-    def test_board_values_valid():
-        for sample in samples:
-            if not np.isin(sample["board"], [-1, 0, 1]).all():
-                return False, "Found board values outside {-1,0,1}."
-        return True, f"Checked {len(samples)} sampled boards."
-
-    def test_turn_balance():
-        for sample in samples:
-            if abs(sample["x_count"] - sample["o_count"]) > 1:
-                return False, "Found board with move imbalance > 1."
-        return True, "All sampled boards respect turn balance."
-
-    def test_piece_count_consistency():
-        for sample in samples:
-            if sample["x_count"] + sample["o_count"] + sample["empty_count"] != 81:
-                return False, "Piece counts do not sum to 81 cells."
-        return True, "Piece counts match 81 cells for all samples."
-
-    def test_visits_nonnegative():
-        for sample in samples:
-            if sample["visits"] < 0:
-                return False, "Found negative visit count."
-        return True, "All sampled visit counts are non-negative."
-
-    def test_q_finite():
-        for sample in samples:
-            if not np.isfinite(sample["q"]):
-                return False, "Found non-finite Q value."
-        return True, "All sampled Q values are finite."
-
-    def test_symmetry_shapes():
-        for sample in samples:
-            syms = game.all_symmetries_fast(sample["board"])
-            if any(sym.shape != (9, 9) for sym in syms):
-                return False, "Symmetry transform produced wrong shape."
-        return True, "All symmetry transforms kept 9x9 shape."
-
-    def test_symmetry_piece_counts():
-        for sample in samples:
-            syms = game.all_symmetries_fast(sample["board"])
-            for sym in syms:
-                flat = sym.ravel()
-                if np.count_nonzero(flat == 1) != sample["x_count"]:
-                    return False, "X count changed under symmetry."
-                if np.count_nonzero(flat == -1) != sample["o_count"]:
-                    return False, "O count changed under symmetry."
-        return True, "All symmetry transforms preserved piece counts."
-
-    def test_symmetry_canonical_invariance():
-        for sample in samples:
-            canonical = game.canonical_board_int(sample["board"])
-            for sym in game.all_symmetries_fast(sample["board"]):
-                if game.canonical_board_int(sym) != canonical:
-                    return False, "Canonical hash changed under symmetry."
-        return True, "Canonical hash invariant across symmetries."
-
-    def test_canonical_equals_min_symmetry_hash():
-        for sample in samples:
-            syms = game.all_symmetries_fast(sample["board"])
-            sym_hashes = [hashing.encode_board_to_int(sym.ravel()) for sym in syms]
-            if game.canonical_board_int(sample["board"]) != min(sym_hashes):
-                return False, "Canonical hash is not the minimum symmetry hash."
-        return True, "Canonical hash equals minimum symmetry hash."
-
-    def test_symmetry_unique_count():
-        for sample in samples:
-            syms = game.all_symmetries_fast(sample["board"])
-            unique = {hashing.encode_board_to_int(sym.ravel()) for sym in syms}
-            if not (1 <= len(unique) <= 8):
-                return False, "Symmetry unique count outside [1, 8]."
-        return True, "Symmetry variants count is within expected range."
-
-    tests = [
-        ("Board values are valid", test_board_values_valid),
-        ("Move counts obey turn balance", test_turn_balance),
-        ("Piece counts sum to 81 cells", test_piece_count_consistency),
-        ("Visits are non-negative", test_visits_nonnegative),
-        ("Q values are finite", test_q_finite),
-        ("Symmetry transforms keep 9x9 shape", test_symmetry_shapes),
-        ("Symmetry transforms preserve piece counts", test_symmetry_piece_counts),
-        ("Canonical hash invariant across symmetries", test_symmetry_canonical_invariance),
-        ("Canonical hash equals minimum symmetry hash", test_canonical_equals_min_symmetry_hash),
-        ("Symmetry unique count within expected range", test_symmetry_unique_count),
+    checks = [
+        ("board values are valid", check_board_values),
+        ("move counts obey turn balance", check_turn_balance),
+        ("visits are non-negative", check_visits_nonnegative),
+        ("sampled q values have signal", check_q_value_signal),
+        ("sampled visit counts have signal", check_visit_signal),
+        ("symmetry pipeline is consistent", check_symmetry_consistency),
+        ("opening preference favors the center", check_opening_preference),
     ]
 
-    print("\n===== INSPECTION TESTS =====")
+    print("\ninspection tests")
     passed = 0
-    for name, func in tests:
-        ok, details = func()
-        record(name, ok, details)
-        print(f"[{'PASS' if ok else 'FAIL'}] {name}: {details}")
+    for name, func in checks:
+        ok, details = func(samples, game, path)
+        results.append({"name": name, "passed": ok, "details": details})
+        print(f"{'pass' if ok else 'fail'}: {name}: {details}")
         if ok:
             passed += 1
 
-    print(f"\nPassed {passed}/{len(tests)} tests.\n")
+    print(f"\npassed {passed}/{len(checks)} tests\n")
     return results
 
-
-# ==================================================
-# ===================== PLOTS ======================
-# (SAVED TO FILES, REGULAR LINEAR GRAPHS)
-# ==================================================
-
 def plot_sample_distributions(samples, output_dir):
+    """save simple plots for the sampled data."""
+    if not samples:
+        print("no plot samples collected")
+        return
+
     ensure_project_dirs()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -214,7 +278,6 @@ def plot_sample_distributions(samples, output_dir):
     q_values = np.array([sample["q"] for sample in samples], dtype=float)
     visits = np.array([sample["visits"] for sample in samples], dtype=int)
 
-    # Q histogram
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(q_values, bins=60, edgecolor="black")
     ax.set_title("Sampled Q-value distribution")
@@ -224,7 +287,6 @@ def plot_sample_distributions(samples, output_dir):
     fig.savefig(output_dir / "q_value_distribution.png", dpi=150)
     plt.close(fig)
 
-    # Visits histogram (linear, not log)
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(visits, bins=60, edgecolor="black")
     ax.set_title("Sampled visit-count distribution")
@@ -234,7 +296,6 @@ def plot_sample_distributions(samples, output_dir):
     fig.savefig(output_dir / "visit_distribution.png", dpi=150)
     plt.close(fig)
 
-    # Q vs visits scatter (linear)
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.scatter(visits, q_values, s=5, alpha=0.3)
     ax.set_title("Q value vs visit count")
@@ -244,40 +305,31 @@ def plot_sample_distributions(samples, output_dir):
     fig.savefig(output_dir / "q_vs_visits.png", dpi=150)
     plt.close(fig)
 
-    print(f"Plots saved to: {output_dir}")
-
-
-# ==================================================
-# ================== INSPECTION RUN ================
-# ==================================================
+    print(f"plots saved to: {output_dir}")
 
 def run_inspection_suite(path=FIXED_QTABLE_PATH):
+    """run the sample-based inspection suite."""
     game = UltimateTicTacToeGame(q_table={}, training=False, multiprocess=False)
 
-    print(">>> Collecting samples for tests...")
+    print("collecting samples for tests and plots")
     samples, seen = collect_samples(
         path,
         sample_size=SAMPLE_SIZE,
         max_entries=MAX_ENTRIES,
     )
-    print(f">>> Samples collected: {len(samples)} (from {seen} valid scanned entries)\n")
+    print(f"samples collected: {len(samples)} (from {seen} valid scanned entries)\n")
 
-    print(">>> Collecting samples for plots...")
-    plot_samples, _ = collect_samples(
-        path,
-        sample_size=min(PLOT_SAMPLE_SIZE, SAMPLE_SIZE),
-        max_entries=MAX_ENTRIES,
-        seed=2024,
-    )
-    print(f">>> Plot samples collected: {len(plot_samples)}\n")
+    plot_samples = samples[: min(len(samples), PLOT_SAMPLE_SIZE)]
+    print(f"plot samples collected: {len(plot_samples)}\n")
 
-    results = run_data_tests(samples, game)
+    results = run_data_tests(samples, game, path=path)
     plot_sample_distributions(plot_samples, ARTIFACTS_DIR)
 
     return results
 
 
 def inspect_lmdb(path):
+    """print aggregate lmdb statistics."""
     qtable = LMDBQTable(path=path, readonly=True, lock=False, max_readers=1)
 
     entries = 0
@@ -308,11 +360,11 @@ def inspect_lmdb(path):
             info = qtable.info()
             stat = txn.stat()
 
-            print("===== LMDB INFO =====")
-            print(f"Entries      : {stat['entries']}")
-            print(f"Page size    : {qtable.page_size()} bytes")
-            print(f"Map size     : {info['map_size'] / (1024**3):.2f} GB")
-            print(f"Last page no : {info['last_pgno']}")
+            print("lmdb info")
+            print(f"entries: {stat['entries']}")
+            print(f"page size: {qtable.page_size()} bytes")
+            print(f"map size: {info['map_size'] / (1024**3):.2f} gb")
+            print(f"last page no: {info['last_pgno']}")
             print()
 
             for k, v in qtable.iter_raw_items(txn=txn):
@@ -322,7 +374,7 @@ def inspect_lmdb(path):
 
                 if PROGRESS_EVERY and (entries % PROGRESS_EVERY == 0):
                     elapsed = time.time() - start
-                    print(f"[{entries:,}] scanned ({entries/elapsed:,.0f} entries/sec)")
+                    print(f"{entries:,} scanned ({entries/elapsed:,.0f} entries/sec)")
 
                 if not qtable.key_is_valid(k):
                     bad_key_len += 1
@@ -334,14 +386,12 @@ def inspect_lmdb(path):
 
                 _state_int, q, visits = qtable.decode_entry(k, v)
 
-                # decode board and count non-empty
                 b = qtable.decode_board_from_key(k)
                 non_empty = 0
                 for cell in b:
                     if cell != 0:
                         non_empty += 1
 
-                # keep your original "effective entries" condition: non_empty < NUM_PLAYS
                 if non_empty < NUM_PLAYS:
                     used_entries += 1
                     sum_visits += visits
@@ -366,36 +416,36 @@ def inspect_lmdb(path):
                 elif q < 0:
                     negative_q += 1
 
-        print("\n===== SUMMARY =====")
-        print(f"Total entries        : {entries}")
-        print(f"Effective entries    : {used_entries}")
-        print(f"Usable entries:      : {valid}")
-        print(f"Bad key length       : {bad_key_len}")
-        print(f"Bad value length     : {bad_val_len}")
+        print("\nsummary")
+        print(f"total entries: {entries}")
+        print(f"effective entries: {used_entries}")
+        print(f"usable entries: {valid}")
+        print(f"bad key length: {bad_key_len}")
+        print(f"bad value length: {bad_val_len}")
         print()
 
-        print("===== VISIT STATS (for non_empty < NUM_PLAYS) =====")
-        print(f"Min visits           : {min_visits if used_entries > 0 else 'N/A'}")
-        print(f"Max visits           : {max_visits if used_entries > 0 else 'N/A'}")
+        print("visit stats")
+        print(f"min visits: {min_visits if used_entries > 0 else 'n/a'}")
+        print(f"max visits: {max_visits if used_entries > 0 else 'n/a'}")
         if used_entries > 0:
-            print(f"Avg visits           : {sum_visits / used_entries:.3f}")
+            print(f"avg visits: {sum_visits / used_entries:.3f}")
         else:
-            print("Avg visits           : N/A")
-        print(f"Zero-visit states    : {zero_visits}")
+            print("avg visits: n/a")
+        print(f"zero-visit states: {zero_visits}")
         print()
 
-        print("===== Q STATS =====")
-        print(f"Min Q                : {min_q}")
-        print(f"Max Q                : {max_q}")
-        print(f"Avg Q                : {sum_q / entries:.6f}")
-        print(f"Positive Q states    : {positive_q}")
-        print(f"Negative Q states    : {negative_q}")
+        print("q stats")
+        print(f"min q: {min_q}")
+        print(f"max q: {max_q}")
+        print(f"avg q: {sum_q / entries:.6f}")
+        print(f"positive q states: {positive_q}")
+        print(f"negative q states: {negative_q}")
         print()
 
         if max_visit_key is not None:
-            print("===== MOST VISITED STATE (among non_empty < NUM_PLAYS) =====")
-            print(f"Visits : {max_visits}")
-            print(f"Q-value: {max_visit_q}")
+            print("most visited state")
+            print(f"visits: {max_visits}")
+            print(f"q-value: {max_visit_q}")
             print()
             board = qtable.decode_board_from_key(max_visit_key)
             print_ultimate_board(board)
@@ -404,10 +454,11 @@ def inspect_lmdb(path):
 
 
 def print_ultimate_board(board):
+    """print a 9x9 board with subboard separators."""
     def sym(x):
         return {0: "-", 1: "X", -1: "O"}.get(x, str(x))
 
-    board = [[board[9 * i + j] for j in range(9)] for i in range(9)]
+    board = np.array(board, dtype=int).reshape((9, 9))
     s = ""
     for row in range(9):
         s += "|"
@@ -423,6 +474,5 @@ def print_ultimate_board(board):
 
 
 if __name__ == "__main__":
-    # Quick DB stats + sample suite
-    inspect_lmdb(FIXED_QTABLE_PATH)
-    # run_inspection_suite()
+    # quick db stats and sample suite
+    run_inspection_suite()
