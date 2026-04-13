@@ -394,8 +394,15 @@ class UltimateTicTacToeGame:
                 if val > best_score:
                     best = (bi, bj, r, c)
                     best_score = val
-
         return best
+
+    def current_board_value(self):
+        """return the q-table value for the current board, if present."""
+        board_int = self.get_board_int()
+        if board_int in self.q_table:
+            value, _ = self.q_table[board_int]
+            return float(value)
+        return None
 
     @staticmethod
     def all_symmetries_fast(b):
@@ -454,6 +461,10 @@ class UltimateTicTacToeGame:
             if best is None or v < best:
                 best = v
         return best
+
+    def get_board_int(self):
+        """hash the current board state."""
+        return self.canonical_board_int(self.board_rep)
 
     @staticmethod
     def get_board_from_int(value):

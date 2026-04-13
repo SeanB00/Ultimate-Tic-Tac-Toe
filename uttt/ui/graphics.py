@@ -197,6 +197,8 @@ class BoardGrid(GridLayout):
                     btn.background_color = PALETTE["board_playable"]
                 else:
                     btn.background_color = PALETTE["board_blocked"]
+        if self.app is not None:
+            self.app.update_value_label()
 
     def show_result(self):
         """show the final result text."""
@@ -365,17 +367,32 @@ class UTTTApp(App):
         )
         reset_btn.bind(on_release=self.reset_game)
 
+        status_box = BoxLayout(
+            orientation="vertical",
+            size_hint=(0.66, 1),
+            spacing=dp(2),
+        )
+
         self.status_label = Label(
             text="Select mode from intro",
             color=PALETTE["text"],
-            size_hint=(0.66, 1),
+            size_hint=(1, 0.62),
             font_size=20,
             bold=True,
         )
 
+        self.value_label = Label(
+            text="Value: -",
+            color=PALETTE["text_muted"],
+            size_hint=(1, 0.38),
+            font_size=15,
+        )
+        status_box.add_widget(self.status_label)
+        status_box.add_widget(self.value_label)
+
         top.add_widget(menu_btn)
         top.add_widget(reset_btn)
-        top.add_widget(self.status_label)
+        top.add_widget(status_box)
 
         board_shell = SurfaceCard(
             orientation="vertical",
@@ -446,6 +463,7 @@ class UTTTApp(App):
         self.board_grid.refresh()
         self.status_label.text = f"Mode: {self.mode_label()}"
         self.status_label.color = PALETTE["text"]
+        self.update_value_label()
 
         if not self.game.is_game_running():
             return
@@ -457,6 +475,18 @@ class UTTTApp(App):
             self.status_label.text = f"Mode: {self.mode_label()} | AI opened. Your turn."
         else:
             self.board_grid.show_result()
+
+    def update_value_label(self):
+        """show the value of the board currently on screen."""
+        if not hasattr(self, "game"):
+            self.value_label.text = "Value: -"
+            return
+
+        value = self.game.current_board_value()
+        if value is None:
+            self.value_label.text = "Value: -"
+        else:
+            self.value_label.text = f"Value: {value:.4f}"
 
     def play_ai_turn(self):
         """let the current ai make one move."""

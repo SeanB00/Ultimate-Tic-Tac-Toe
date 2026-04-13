@@ -43,6 +43,10 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
         v = self.model(x).item()
         return float(v)
 
+    def current_board_value(self):
+        """return the cnn value for the current board."""
+        return self.value_of_board(self.board_rep)
+
     def best_from_moves(self, moves):
         """pick the highest-value move."""
         best = None
