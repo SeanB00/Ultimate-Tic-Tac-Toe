@@ -1,0 +1,234 @@
+@startuml
+title Ultimate Tic-Tac-Toe - Project Structure and Flow
+allowmixing
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+
+package "uttt/game" {
+  class UltimateTicTacToeGame {
+    +board_rep: ndarray(9x9)
+    +full_board: ndarray(3x3x3x3)
+    +sub_boards: ndarray(3x3)
+    +empty_places: list[set[cell]]
+    +empty_sub_places: set[subboard]
+    +curr_board: tuple | None
+    +q_table: LMDBQTable | dict
+    +gamma: float
+    --
+    +init_game()
+    +legal_moves()
+    +apply_move(bi,bj,r,c,symbol)
+    +find_smart_move_candidates(...)
+    +best_from_moves(moves)
+    +all_symmetries_fast(board)
+    +canonical_board_int(board)
+    +play_one_game(...)
+    +current_board_value()
+  }
+
+  class LMDBQTable {
+    +path: str
+    +env: lmdb.Environment
+    --
+    +begin_read()
+    +get(state_int)
+    +__setitem__(state_int, value)
+    +iter_entries()
+    +update_from_targets(board_score_list)
+    +batch_merge_local_q(local_q)
+  }
+
+  class Games {
+    +num_games: int
+    +processes: int
+    +chunk_size: int
+    +agent_wins: int
+    +player_wins: int
+    +ties: int
+    --
+    +multi_process_train()
+    +single_process_train(...)
+  }
+
+  class "hashing.py <<module>>" as Hashing {
+    +encode_board_to_int(board)
+    +decode_board_from_int(value)
+  }
+}
+
+package "uttt/data_build" {
+  class "build_filtered_db.py <<module>>" as BuildFiltered {
+    +main()
+  }
+
+  class "build_mixed_db.py <<module>>" as BuildMixed {
+    +states_needed(...)
+    +compute_target_state_counts(...)
+    +classify_bucket(...)
+    +sample_lmdb_states(...)
+    +write_lmdb_rows(...)
+    +main()
+  }
+
+  class ReservoirStates {
+    +capacity: int
+    +items: list
+    +seen: int
+    --
+    +add(item)
+  }
+}
+
+package "uttt/ml" {
+  class ModelD {
+    +mb: Sequential
+    +fc: Sequential
+    --
+    +forward(x)
+  }
+
+  class NpyDataset {
+    +X: ndarray
+    +y: ndarray
+    --
+    +__len__()
+    +__getitem__(idx)
+  }
+
+  class "cnn_core.py <<module>>" as CnnCore {
+    +pick_device()
+    +build_model(option)
+    +load_trained_model(option)
+    +build_npy_dataloaders(...)
+    +evaluate_mse(...)
+    +train_supervised_model(...)
+  }
+
+  class UltimateTicTacToeCNN {
+    +model: nn.Module
+    +device: torch.device
+    +mode: str
+    --
+    +board_to_tensor(board)
+    +value_of_board(board)
+    +best_from_moves(moves)
+    +agent_smart_move()
+    +current_board_value()
+  }
+}
+
+package "uttt/ui" {
+  class BoardGrid {
+    +game: UltimateTicTacToeGame
+    +buttons: list[list[CellButton]]
+    +status_label
+    +app
+    --
+    +on_cell_pressed(btn)
+    +refresh()
+    +show_result()
+    +update_grid_lines()
+  }
+
+  class UTTTApp {
+    +opponent_type: str
+    +cnn_option: str
+    +game
+    +board_grid
+    --
+    +build()
+    +build_intro_screen()
+    +build_game_screen()
+    +init_game_instance()
+    +activate_game_board()
+    +update_value_label()
+    +play_ai_turn()
+  }
+
+  class "api.py <<module>>" as ApiModule {
+    +legal_global_moves(game)
+    +build_prompt(game, legal_moves)
+    +extract_move(text)
+    +get_ai_move(game)
+  }
+}
+
+package "artifacts and files" {
+  database "fixed_qtable.lmdb" as FixedQtable
+  file "filtered_X.npy\nfiltered_y.npy" as FilteredNpy
+  file "mixed_X.npy\nmixed_y.npy" as MixedNpy
+  file "model_*.pt\nbest_model_*.pt" as ModelFiles
+}
+
+UltimateTicTacToeCNN --|> UltimateTicTacToeGame
+
+Games --> UltimateTicTacToeGame : runs repeated self-play
+UltimateTicTacToeGame --> LMDBQTable : reads/writes state values
+LMDBQTable --> Hashing : state_int <-> board
+LMDBQTable --> FixedQtable : stores canonical states
+
+BuildFiltered --> LMDBQTable : scans entries
+BuildFiltered --> UltimateTicTacToeGame : expands symmetries
+BuildFiltered --> FilteredNpy : writes filtered dataset
+
+BuildMixed --> LMDBQTable : samples visits==1 states
+BuildMixed --> ReservoirStates : bucket sampling
+BuildMixed --> UltimateTicTacToeGame : decode + symmetries
+BuildMixed --> FilteredNpy : reads base rows
+BuildMixed --> MixedNpy : writes mixed dataset
+
+CnnCore --> NpyDataset : loads numpy boards
+CnnCore --> ModelD : representative default model
+CnnCore --> MixedNpy : trains from mixed dataset
+CnnCore --> ModelFiles : saves checkpoints and best model
+
+UltimateTicTacToeCNN --> CnnCore : load trained model
+UltimateTicTacToeCNN --> ModelFiles : uses checkpoint at inference
+
+UTTTApp --> BoardGrid : owns and refreshes board view
+UTTTApp --> UltimateTicTacToeGame : Q-table / API modes
+UTTTApp --> UltimateTicTacToeCNN : CNN mode
+UTTTApp --> ApiModule : API mode only
+BoardGrid --> UltimateTicTacToeGame : apply_move(), legal_moves(), current_board_value()
+ApiModule --> UltimateTicTacToeGame : reads legal moves and board state
+
+note right of Games
+Flow step 1:
+Runs many episodes and calls
+play_one_game() repeatedly.
+end note
+
+note right of LMDBQTable
+Flow step 2:
+Persists canonical board states
+with averaged q_value and visits.
+end note
+
+note right of BuildMixed
+Flow step 3:
+Turns LMDB knowledge into
+balanced supervised datasets.
+end note
+
+note right of CnnCore
+Flow step 4:
+Builds dataloaders, trains CNN,
+evaluates MSE, and saves checkpoints.
+end note
+
+note right of UltimateTicTacToeCNN
+Flow step 5:
+Scores each legal move and
+chooses the highest-value board.
+end note
+
+note right of UTTTApp
+Flow step 6:
+Exposes the chosen agent through GUI
+and coordinates human/AI turns.
+end note
+
+@enduml

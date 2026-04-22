@@ -1,6 +1,9 @@
 import os
 import sys
+import time
 from pathlib import Path
+
+from sympy import fps
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -21,7 +24,7 @@ from kivy.uix.screenmanager import FadeTransition, Screen, ScreenManager
 from kivy.uix.widget import Widget
 
 from uttt.game.logic import UltimateTicTacToeGame
-from uttt.ml.cnn_agent import UltimateTicTacToeCNN, load_model
+from uttt.ml.cnn_agent import build_game_for_mode, load_model
 
 
 PALETTE = {
@@ -34,8 +37,8 @@ PALETTE = {
     "board_blocked": (0.26, 0.26, 0.29, 1.0),
     "board_won": (0.18, 0.18, 0.21, 1.0),
     "grid_line": (0.92, 0.92, 0.95, 1.0),
-    "text": (0.96, 0.96, 0.98, 1.0),
-    "text_muted": (0.80, 0.80, 0.84, 1.0),
+    "text": (0.96, 0.96, 0.98, 1.0),       #almost white
+    "text_muted": (0.80, 0.80, 0.84, 1.0), #grey
     "x": (0.95, 0.78, 0.28, 1.0),
     "o": (0.50, 0.82, 0.95, 1.0),
 }
@@ -145,13 +148,7 @@ class BoardGrid(GridLayout):
         bj = gc // 3
         c = gc % 3
 
-        if self.game.full_board[bi][bj][r][c] != 0:
-            return
-
-        if self.game.curr_board is None:
-            if (bi, bj) not in self.game.empty_sub_places:
-                return
-        elif self.game.curr_board != (bi, bj):
+        if not self.game.is_valid_move(bi, bj, r, c):
             return
 
         self.game.apply_move(bi, bj, r, c, self.game.player_symbol)
@@ -163,6 +160,7 @@ class BoardGrid(GridLayout):
 
         self.status_label.text = "AI is thinking..."
         self.status_label.color = PALETTE["text_muted"]
+
         ai_status = self.app.play_ai_turn()
         self.status_label.text = ai_status
         self.status_label.color = PALETTE["text"]
@@ -197,8 +195,8 @@ class BoardGrid(GridLayout):
                     btn.background_color = PALETTE["board_playable"]
                 else:
                     btn.background_color = PALETTE["board_blocked"]
-        if self.app is not None:
-            self.app.update_value_label()
+
+        self.app.update_value_label()
 
     def show_result(self):
         """show the final result text."""
@@ -237,7 +235,7 @@ class UTTTApp(App):
         Window.clearcolor = PALETTE["window_bg"]
 
         self.opponent_type = "table"
-        self.cnn_option = "A"
+        self.cnn_option = "C"
 
         self.screen_manager = ScreenManager(transition=FadeTransition(duration=0.22))
         self.screen_manager.add_widget(self.build_intro_screen())
@@ -295,34 +293,46 @@ class UTTTApp(App):
             font_size=20,
             fill=PALETTE["button_alt"],
         )
-        qtable_btn.bind(on_release=lambda _x: self.start_game("table"))
+        qtable_btn.bind(on_release=lambda x: self.start_game("table"))
         api_btn = ThemedButton(
             text="Play vs API",
             font_size=20,
             fill=PALETTE["button"],
         )
-        api_btn.bind(on_release=lambda _x: self.start_game("api"))
+        api_btn.bind(on_release=lambda x: self.start_game("api"))
         quick_row.add_widget(qtable_btn)
         quick_row.add_widget(api_btn)
 
         options.add_widget(quick_row)
         options.add_widget(
             Label(
-                text="CNN choices (5 models)",
+                text="Pure CNN choices (5 models). Separate minimax mode uses CNN C.",
                 color=PALETTE["text_muted"],
                 size_hint=(1, 0.10),
                 font_size=18,
             )
         )
 
-        cnn_grid = GridLayout(cols=3, size_hint=(1, 0.50), spacing=dp(8))
+        cnn_grid = GridLayout(cols=5, size_hint=(1, 0.40), spacing=dp(8))
         for i, option in enumerate(self.CNN_OPTIONS):
             fill = PALETTE["button"] if i % 2 == 0 else PALETTE["button_alt"]
             btn = ThemedButton(text=f"CNN {option}", font_size=20, fill=fill)
             btn.bind(on_release=lambda _x, m=option: self.start_game("cnn", m))
             cnn_grid.add_widget(btn)
-        cnn_grid.add_widget(Widget())
         options.add_widget(cnn_grid)
+
+        minimax_row = BoxLayout(size_hint=(1, 0.10), spacing=dp(10))
+        minimax_row.add_widget(Widget())
+        minimax_btn = ThemedButton(
+            text="Play vs Minimax (CNN C)",
+            font_size=20,
+            fill=PALETTE["button_alt"],
+            size_hint=(0.7, 1),
+        )
+        minimax_btn.bind(on_release=lambda _x: self.start_game("minimax"))
+        minimax_row.add_widget(minimax_btn)
+        minimax_row.add_widget(Widget())
+        options.add_widget(minimax_row)
 
         options.add_widget(
             Label(
@@ -417,17 +427,22 @@ class UTTTApp(App):
             return "Q-Table"
         if self.opponent_type == "api":
             return "API"
+        if self.opponent_type == "minimax":
+            return f"Minimax CNN {self.cnn_option}"
         return f"CNN {self.cnn_option}"
 
     def start_game(self, opponent_type, cnn_option=None):
-        """start a new game in the chosen mode."""
+        """start a new game i n the chosen mode."""
         self.opponent_type = opponent_type
-        if cnn_option is not None:
+        if opponent_type == "minimax":
+            self.cnn_option = "C"
+        elif cnn_option is not None:
             self.cnn_option = cnn_option
 
         self.init_game_instance()
-        self.activate_game_board()
         self.screen_manager.current = "game"
+        self.activate_game_board()
+
 
     def back_to_intro(self, *_args):
         """return to the intro screen."""
@@ -445,12 +460,14 @@ class UTTTApp(App):
         if self.opponent_type in {"table", "api"}:
             self.game = UltimateTicTacToeGame()
         else:
+            if self.opponent_type == "minimax":
+                self.cnn_option = "C"
             model, device = load_model(self.cnn_option)
-
-            self.game = UltimateTicTacToeCNN(
+            mode = "minimax_cnn" if self.opponent_type == "minimax" else "pure_cnn"
+            self.game = build_game_for_mode(
                 model=model,
                 device=device,
-                mode="pure_cnn",
+                mode=mode,
                 q_table={},
                 training=False,
                 multiprocess=False,
@@ -498,6 +515,10 @@ class UTTTApp(App):
             self.game.agent_smart_move()
             return f"CNN {self.cnn_option} move"
 
+        if self.opponent_type == "minimax":
+            self.game.agent_smart_move()
+            return f"Minimax CNN {self.cnn_option} move"
+
         try:
             from uttt.ui.api import get_ai_move
 
@@ -506,7 +527,7 @@ class UTTTApp(App):
                 gr, gc = move
                 bi, r = divmod(gr, 3)
                 bj, c = divmod(gc, 3)
-                if (bi, bj, r, c) in self.game.legal_moves():
+                if self.game.is_valid_move(bi, bj, r, c):
                     self.game.apply_move(bi, bj, r, c, self.game.agent_symbol)
                     return "API move"
 

@@ -31,9 +31,9 @@ DEFAULT_AUTO_RESUME = True
 DEFAULT_EARLY_STOPPING_PATIENCE = 3
 DEFAULT_EARLY_STOPPING_MIN_DELTA = 5e-5
 TRAINING_NAME = "mixed"
-TRAIN_MODEL_OPTION = "D"
-TRAIN_EPOCHS = 15
-TRAIN_LR = 1e-4
+TRAIN_MODEL_OPTION = "E"
+TRAIN_EPOCHS = 1
+TRAIN_LR = 5e-4
 
 def pick_device():
     """pick the torch device."""
@@ -61,8 +61,6 @@ def act(name):
         return nn.SELU(inplace=True)
     if name == "prelu":
         return nn.PReLU()
-    if name == "hardswish":
-        return nn.Hardswish()
     if name == "softplus":
         return nn.Softplus()
     raise ValueError(f"unknown activation: {name}")
@@ -273,18 +271,6 @@ def build_npy_dataloaders(
     """build dataloaders from numpy arrays."""
     dataset = NpyDataset(x_path, y_path)
     n = len(dataset)
-    if n < 10:
-        raise RuntimeError(f"dataset too small: n={n}")
-
-    if not 0.0 < val_ratio < 1.0:
-        raise ValueError(f"val_ratio must be between 0 and 1, got {val_ratio}")
-    if not 0.0 < test_ratio < 1.0:
-        raise ValueError(f"test_ratio must be between 0 and 1, got {test_ratio}")
-    if val_ratio + test_ratio >= 1.0:
-        raise ValueError(
-            f"val_ratio + test_ratio must be less than 1, got {val_ratio + test_ratio}"
-        )
-
     val_n = max(1, int(n * val_ratio))
     test_n = max(1, int(n * test_ratio))
     if val_n + test_n >= n:

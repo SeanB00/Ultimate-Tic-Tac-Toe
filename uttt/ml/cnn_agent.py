@@ -3,6 +3,7 @@
 # openmp runtime workaround
 import os
 import sys
+import time
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -19,6 +20,9 @@ import torch.nn as nn
 from uttt.game.logic import UltimateTicTacToeGame
 import uttt.ml.cnn_core as cnn_core
 
+
+
+DEPTH = 6
 
 class UltimateTicTacToeCNN(UltimateTicTacToeGame):
     """pick agent moves with a cnn value model."""
@@ -74,8 +78,6 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
             self.apply_move(*random.choice(all_moves), self.agent_symbol)
             return
 
-        if self.mode != "pure_cnn":
-            raise ValueError(f"Unknown CNN mode: {self.mode}")
 
         best = self.best_from_moves(all_moves)
         if best is None:
@@ -84,29 +86,58 @@ class UltimateTicTacToeCNN(UltimateTicTacToeGame):
         self.apply_move(*best, self.agent_symbol)
         return
 
+
+def build_game_for_mode(model, device, mode, **kwargs):
+    """build the right game class for the requested evaluation mode."""
+    if mode == "minimax_cnn":
+        from uttt.game.minimax_agent import UltimateTicTacToeMinimaxCNN
+
+        return UltimateTicTacToeMinimaxCNN(model=model, device=device, search_depth=DEPTH,**kwargs)
+
+    return UltimateTicTacToeCNN(model=model, device=device, mode=mode, **kwargs)
+
+
 def load_model(model_option: str):
     """load one trained cnn model."""
     return cnn_core.load_trained_model(model_option=model_option)
 
-def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int = 2000, random_player: bool = True):
+
+def play_games(
+    model: nn.Module,
+    device: torch.device,
+    mode: str,
+    n_games: int = 2000,
+    random_player: bool = True,
+    **game_kwargs,
+):
     """play repeated games for quick evaluation."""
 
     agent_w = 0
     player_w = 0
     ties = 0
 
-    game = UltimateTicTacToeCNN(
+    game = build_game_for_mode(
         model=model,
         device=device,
         mode=mode,
         q_table={},
         training=False,
         multiprocess=False,
-        random_player=random_player
+        random_player=random_player,
+        **game_kwargs,
     )
+    start = time.time()
     for _ in range(n_games):
-        if _ % 10 == 0:
-            print(f"game {_}")
+        if _ % 1 == 0 and _ > 0:
+            print(f"game {_}, speed: {10 / (time.time()-start):.2f} games/s")
+            start = time.time()
+
+        if _ % 100 == 0:
+            total = _+1
+            print(f"mode: {mode}")
+            print(f"agent win %: {100.0 * agent_w / total:.2f}")
+            print(f"player win %: {100.0 * player_w / total:.2f}")
+            print(f"tie %: {100.0 * ties / total:.2f}")
         game.play_one_game(epsilon=0, training=False)
         w = game.check_true_win()
         if w == 1:
@@ -127,6 +158,8 @@ def play_games(model: nn.Module, device: torch.device, mode: str, n_games: int =
         print("no moves tracked")
 
     return agent_w, player_w, ties
+
+
 def test_evaluations(model_option: str):
     """print cnn values for one sampled finished game."""
 
@@ -138,7 +171,7 @@ def test_evaluations(model_option: str):
         q_table={},
         training=False,
         multiprocess=False,
-        random_player=True
+        random_player=False
     )
     boards = game.play_one_game(training=False)
     win = game.check_true_win()
@@ -147,7 +180,7 @@ def test_evaluations(model_option: str):
         print(game.value_of_board(UltimateTicTacToeGame.get_board_from_int(board)))
 
 if __name__ == "__main__":
-    test_evaluations("C")
-    for model_option in ["A", "B", "C", "D", "E"]:
+
+    for model_option in ["C"]:
         model, device = load_model(model_option)
-        play_games(model, device, mode="random", n_games=1000)
+        play_games(model, device, mode="minimax_cnn", n_games=25)

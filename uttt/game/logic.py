@@ -148,6 +148,16 @@ class UltimateTicTacToeGame:
             for (r, c) in self.empty_places[bi][bj]
         ]
 
+    def is_valid_move(self, bi, bj, r, c):
+        """check whether one local-coordinate move is currently legal."""
+        if not (0 <= bi < 3 and 0 <= bj < 3 and 0 <= r < 3 and 0 <= c < 3):
+            return False
+        if not self.is_game_running():
+            return False
+        if (bi, bj) not in self.get_playable_boards():
+            return False
+        return (r, c) in self.empty_places[bi][bj]
+
     @staticmethod
     def cell_wins(board, cell, symbol):
         """check whether one cell move wins a 3x3 board."""

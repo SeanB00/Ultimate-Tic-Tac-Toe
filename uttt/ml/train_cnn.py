@@ -72,6 +72,10 @@ def main() -> None:
         f"{result['train_plot_path']} | {result['val_plot_path']}"
     )
 
+def test(model):
+    cnn_core.TRAIN_MODEL_OPTION = model
+    main()
 
 if __name__ == "__main__":
-    main()
+    for model in ['A','B','C','D']:
+        test(model)

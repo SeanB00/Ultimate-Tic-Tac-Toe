@@ -10,6 +10,11 @@ d = set(c)
 d.remove(2)
 print(d,c)
 
+if []:
+    print("hi")
+
+
+
 if [].append(1):
     print("yes")
 if [1,2]:
