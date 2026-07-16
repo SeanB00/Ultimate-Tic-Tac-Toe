@@ -16,7 +16,7 @@ from google import genai
 
 FAST_MODEL = "gemini-3-flash-preview"
 MAX_OUTPUT_TOKENS = 12
-API_KEY = "AIzaSyCFQZrPPLkxa6jeapVT6nLPdcTTpwkUvyk"
+API_KEY = "" #Should be put in env variables
 
 @lru_cache(maxsize=1)
 def get_client():
